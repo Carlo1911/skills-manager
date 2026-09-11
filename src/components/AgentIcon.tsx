@@ -5,6 +5,12 @@ import { getAgentIconSrc, agentIconNeedsDarkInvert } from "../lib/agentIcons";
 
 interface AgentIconProps {
   agentKey: string;
+  /**
+   * Icon key to render instead of `agentKey`. Used by custom agents, whose
+   * generated key has no matching bundled icon but which may have picked
+   * one from the shared set (see `iconKey` on `ToolInfo`).
+   */
+  iconOverride?: string | null;
   displayName?: string;
   className?: string;
   imageClassName?: string;
@@ -13,12 +19,14 @@ interface AgentIconProps {
 
 export function AgentIcon({
   agentKey,
+  iconOverride,
   displayName,
   className,
   imageClassName,
   fallback,
 }: AgentIconProps) {
-  const src = getAgentIconSrc(agentKey);
+  const iconKey = iconOverride || agentKey;
+  const src = getAgentIconSrc(iconKey);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const hasFailed = src === failedSrc;
 
@@ -38,7 +46,7 @@ export function AgentIcon({
           draggable={false}
           className={cn(
             "h-full w-full object-contain",
-            agentIconNeedsDarkInvert(agentKey) && "dark:invert",
+            agentIconNeedsDarkInvert(iconKey) && "dark:invert",
             imageClassName
           )}
           onError={() => setFailedSrc(src)}
