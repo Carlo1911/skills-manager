@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Top-level grouping for sidebar/overview display. Does not affect skill
 /// deployment, sync, or any other backend behavior — purely a UI taxonomy.
@@ -868,6 +868,75 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
     ]
 }
 
+/// Root directory containing Hermes profile skill dirs: `~/.hermes/profiles`.
+fn hermes_profiles_root_dir() -> PathBuf {
+    ToolAdapter::home().join(".hermes").join("profiles")
+}
+
+fn hermes_profile_display_name(name: &str) -> String {
+    let title = name
+        .split(['-', '_', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut word = first.to_uppercase().collect::<String>();
+                    word.push_str(&chars.as_str().to_lowercase());
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    // FIX vs upstream PR #389: avoid "Hermes  Agent" (double space) for
+    // degenerate dir names like "--__" that produce an empty title.
+    if title.is_empty() {
+        "Hermes Agent".to_string()
+    } else {
+        format!("Hermes {title} Agent")
+    }
+}
+
+/// Detect Hermes profiles under `~/.hermes/profiles/*/skills` (or an alternate
+/// `profiles_root` in tests) and build one [`ToolAdapter`] per profile.
+///
+/// Only profile dirs containing a real `skills` subdir are adopted. Results are
+/// sorted by key (profile name) for stable ordering.
+fn hermes_profile_adapters_from(profiles_root: &Path) -> Vec<ToolAdapter> {
+    let mut profiles: Vec<ToolAdapter> = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(profiles_root) else {
+        return profiles;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !path.join("skills").is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.is_empty() || name.starts_with('.') {
+            continue;
+        }
+        profiles.push(ToolAdapter {
+            key: format!("hermes_profiles:{name}"),
+            display_name: hermes_profile_display_name(&name),
+            relative_skills_dir: format!(".hermes/profiles/{name}/skills"),
+            relative_detect_dir: format!(".hermes/profiles/{name}"),
+            additional_scan_dirs: vec![],
+            override_skills_dir: None,
+            category: ToolCategory::Lobster,
+            is_custom: false,
+            recursive_scan: true,
+            project_relative_skills_dir: None,
+        });
+    }
+
+    profiles.sort_by(|a, b| a.key.cmp(&b.key));
+    profiles
+}
+
 /// Read custom tool path overrides from store.
 pub fn custom_tool_paths(store: &crate::core::skill_store::SkillStore) -> HashMap<String, String> {
     store
@@ -933,6 +1002,13 @@ fn custom_tool_adapter(ct: CustomToolDef) -> ToolAdapter {
 
 /// Returns all tool adapters: built-in (with path overrides applied) + custom tools.
 pub fn all_tool_adapters(store: &crate::core::skill_store::SkillStore) -> Vec<ToolAdapter> {
+    all_tool_adapters_in(store, &hermes_profiles_root_dir())
+}
+
+fn all_tool_adapters_in(
+    store: &crate::core::skill_store::SkillStore,
+    profiles_root: &Path,
+) -> Vec<ToolAdapter> {
     let overrides = custom_tool_paths(store);
     let project_overrides = custom_tool_project_paths(store);
     let customs = custom_tools(store);
@@ -944,6 +1020,16 @@ pub fn all_tool_adapters(store: &crate::core::skill_store::SkillStore) -> Vec<To
             adapter
         })
         .collect();
+
+    // Inject dynamically-detected Hermes profile adapters (with the same path
+    // overrides applied) so each profile is managed as a standalone agent.
+    for mut adapter in hermes_profile_adapters_from(profiles_root) {
+        apply_builtin_path_overrides(&mut adapter, &overrides, &project_overrides);
+        if adapters.iter().any(|existing| existing.key == adapter.key) {
+            continue;
+        }
+        adapters.push(adapter);
+    }
 
     for custom in customs {
         if adapters.iter().any(|adapter| adapter.key == custom.key) {
@@ -965,6 +1051,14 @@ pub fn find_adapter_with_store(
     store: &crate::core::skill_store::SkillStore,
     key: &str,
 ) -> Option<ToolAdapter> {
+    find_adapter_with_store_in(store, key, &hermes_profiles_root_dir())
+}
+
+fn find_adapter_with_store_in(
+    store: &crate::core::skill_store::SkillStore,
+    key: &str,
+    profiles_root: &Path,
+) -> Option<ToolAdapter> {
     let overrides = custom_tool_paths(store);
     let project_overrides = custom_tool_project_paths(store);
     let customs = custom_tools(store);
@@ -972,6 +1066,18 @@ pub fn find_adapter_with_store(
     if let Some(mut adapter) = default_tool_adapters().into_iter().find(|a| a.key == key) {
         apply_builtin_path_overrides(&mut adapter, &overrides, &project_overrides);
         return Some(adapter);
+    }
+
+    // FIX vs upstream PR #389: check the detected profile *before* custom
+    // tools, mirroring `all_tool_adapters_in` where the injected profile
+    // adapter takes precedence over a custom tool with the same
+    // `hermes_profiles:*` key. Otherwise list-by-key and find-by-key disagree.
+    if let Some(mut profile) = hermes_profile_adapters_from(profiles_root)
+        .into_iter()
+        .find(|a| a.key == key)
+    {
+        apply_builtin_path_overrides(&mut profile, &overrides, &project_overrides);
+        return Some(profile);
     }
 
     customs
@@ -999,8 +1105,9 @@ pub fn enabled_installed_adapters(
 #[cfg(test)]
 mod tests {
     use super::{
-        CustomToolDef, ToolCategory, all_tool_adapters, default_tool_adapters,
-        find_adapter_with_store,
+        all_tool_adapters, all_tool_adapters_in, default_tool_adapters, find_adapter_with_store,
+        find_adapter_with_store_in, hermes_profile_adapters_from, hermes_profile_display_name,
+        hermes_profiles_root_dir, CustomToolDef, ToolCategory,
     };
     use crate::core::skill_store::SkillStore;
 
@@ -1187,5 +1294,142 @@ mod tests {
         assert!(!adapter.is_custom);
         assert!(!adapter.recursive_scan);
         assert!(adapter.additional_scan_dirs.is_empty());
+    }
+
+    #[test]
+    fn hermes_profiles_are_detected_as_standalone_adapters() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("work").join("skills")).unwrap();
+        std::fs::create_dir_all(root.join("personal").join("skills")).unwrap();
+        // A profile dir without a real skills subdir must be skipped.
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+
+        let adapters = hermes_profile_adapters_from(&root);
+
+        assert_eq!(adapters.len(), 2);
+        // Ordered by key (profile name).
+        assert_eq!(adapters[0].key, "hermes_profiles:personal");
+        assert_eq!(adapters[1].key, "hermes_profiles:work");
+
+        let work = &adapters[1];
+        assert_eq!(work.display_name, "Hermes Work Agent");
+        assert_eq!(work.relative_skills_dir, ".hermes/profiles/work/skills");
+        assert_eq!(work.relative_detect_dir, ".hermes/profiles/work");
+        assert_eq!(work.category, ToolCategory::Lobster);
+        assert!(work.recursive_scan);
+        assert!(!work.is_custom);
+    }
+
+    #[test]
+    fn hermes_profiles_root_is_under_home() {
+        let root = hermes_profiles_root_dir();
+        assert!(root.to_string_lossy().contains(".hermes"));
+        assert!(root.to_string_lossy().contains("profiles"));
+    }
+
+    #[test]
+    fn hermes_profile_display_name_handles_separators_and_degenerate_names() {
+        assert_eq!(hermes_profile_display_name("work"), "Hermes Work Agent");
+        assert_eq!(
+            hermes_profile_display_name("my-work_profile test"),
+            "Hermes My Work Profile Test Agent"
+        );
+        // Degenerate dir name: no double-space agent name.
+        assert_eq!(hermes_profile_display_name("--__"), "Hermes Agent");
+    }
+
+    #[test]
+    fn hermes_profiles_skip_dotfiles_and_non_skill_files() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("ok").join("skills")).unwrap();
+        // Hidden profile dir must be skipped.
+        std::fs::create_dir_all(root.join(".hidden").join("skills")).unwrap();
+        // A *file* named `skills` is not a real skills dir.
+        std::fs::create_dir_all(root.join("notadir")).unwrap();
+        std::fs::write(root.join("notadir").join("skills"), "x").unwrap();
+
+        let adapters = hermes_profile_adapters_from(&root);
+        assert_eq!(adapters.len(), 1);
+        assert_eq!(adapters[0].key, "hermes_profiles:ok");
+    }
+
+    #[test]
+    fn profile_adapter_is_found_by_key() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("alpha").join("skills")).unwrap();
+
+        let found = find_adapter_with_store_in(&store, "hermes_profiles:alpha", &root).unwrap();
+        assert_eq!(found.display_name, "Hermes Alpha Agent");
+        assert_eq!(found.relative_skills_dir, ".hermes/profiles/alpha/skills");
+        assert_eq!(found.category, ToolCategory::Lobster);
+        assert!(found.recursive_scan);
+    }
+
+    #[test]
+    fn profile_adapters_appear_in_all_adapters_without_duplicating_keys() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("alpha").join("skills")).unwrap();
+
+        let adapters = all_tool_adapters_in(&store, &root);
+        let profile_adapters: Vec<_> = adapters
+            .iter()
+            .filter(|adapter| adapter.key.starts_with("hermes_profiles:"))
+            .collect();
+        assert_eq!(profile_adapters.len(), 1);
+        assert_eq!(profile_adapters[0].key, "hermes_profiles:alpha");
+    }
+
+    #[test]
+    fn profile_adapter_wins_over_custom_tool_with_same_key() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("alpha").join("skills")).unwrap();
+
+        // A custom tool that happens to use the same namespaced key must not
+        // create a duplicate — the injected profile adapter takes precedence.
+        let custom_tools = vec![CustomToolDef {
+            key: "hermes_profiles:alpha".to_string(),
+            display_name: "Bogus Custom".to_string(),
+            skills_dir: tmp
+                .path()
+                .join("other-skills")
+                .to_string_lossy()
+                .into_owned(),
+            project_relative_skills_dir: Some(".other/skills".to_string()),
+            category: ToolCategory::Lobster,
+            icon: None,
+        }];
+        store
+            .set_setting(
+                "custom_tools",
+                &serde_json::to_string(&custom_tools).unwrap(),
+            )
+            .unwrap();
+
+        let adapters = all_tool_adapters_in(&store, &root);
+        let profile_adapters: Vec<_> = adapters
+            .iter()
+            .filter(|adapter| adapter.key == "hermes_profiles:alpha")
+            .collect();
+        assert_eq!(profile_adapters.len(), 1);
+        assert_eq!(profile_adapters[0].display_name, "Hermes Alpha Agent");
+        assert!(!profile_adapters[0].is_custom);
+        assert_eq!(
+            profile_adapters[0].relative_skills_dir,
+            ".hermes/profiles/alpha/skills"
+        );
+
+        // find-by-key must agree with list (upstream PR #389 checked custom
+        // first here, which disagreed with the list above).
+        let found = find_adapter_with_store_in(&store, "hermes_profiles:alpha", &root).unwrap();
+        assert_eq!(found.display_name, "Hermes Alpha Agent");
+        assert!(!found.is_custom);
     }
 }

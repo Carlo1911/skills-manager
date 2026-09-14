@@ -61,7 +61,9 @@ const AGENT_ICON_FILES: Record<string, string> = {
 const DARK_INVERT_ICON_KEYS = new Set<string>(["codex", "roo_code"]);
 
 export function getAgentIconSrc(agentKey: string): string | null {
-  const file = AGENT_ICON_FILES[agentKey];
+  const file =
+    AGENT_ICON_FILES[agentKey] ??
+    (agentKey.startsWith("hermes_profiles:") ? AGENT_ICON_FILES.hermes : null);
   return file ? `/agent-icons/${file}` : null;
 }
 
@@ -70,7 +72,7 @@ export function agentIconNeedsDarkInvert(agentKey: string): boolean {
 }
 
 export function hasAgentIcon(agentKey: string): boolean {
-  return Boolean(AGENT_ICON_FILES[agentKey]);
+  return Boolean(AGENT_ICON_FILES[agentKey]) || agentKey.startsWith("hermes_profiles:");
 }
 
 /** All icon keys available for a user to pick from (e.g. for a custom agent). */
