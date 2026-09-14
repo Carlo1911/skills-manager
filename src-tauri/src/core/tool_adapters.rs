@@ -904,6 +904,10 @@ fn hermes_profile_display_name(name: &str) -> String {
 ///
 /// Only profile dirs containing a real `skills` subdir are adopted. Results are
 /// sorted by key (profile name) for stable ordering.
+///
+/// The profile literally named `default` is skipped: it duplicates the built-in
+/// `hermes` adapter (same default configuration), so surfacing both would show
+/// the same agent twice in listings, sync dialogs, and the sidebar.
 fn hermes_profile_adapters_from(profiles_root: &Path) -> Vec<ToolAdapter> {
     let mut profiles: Vec<ToolAdapter> = Vec::new();
 
@@ -917,6 +921,9 @@ fn hermes_profile_adapters_from(profiles_root: &Path) -> Vec<ToolAdapter> {
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.is_empty() || name.starts_with('.') {
+            continue;
+        }
+        if name == "default" {
             continue;
         }
         profiles.push(ToolAdapter {
@@ -1353,6 +1360,29 @@ mod tests {
         let adapters = hermes_profile_adapters_from(&root);
         assert_eq!(adapters.len(), 1);
         assert_eq!(adapters[0].key, "hermes_profiles:ok");
+    }
+
+    #[test]
+    fn default_profile_is_skipped_as_duplicate_of_base_hermes() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("default").join("skills")).unwrap();
+        std::fs::create_dir_all(root.join("work").join("skills")).unwrap();
+
+        // Only `work` survives: `default` duplicates the base `hermes` adapter.
+        let adapters = hermes_profile_adapters_from(&root);
+        assert_eq!(adapters.len(), 1);
+        assert_eq!(adapters[0].key, "hermes_profiles:work");
+
+        // ...and therefore it resolves through neither chokepoint.
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        assert!(find_adapter_with_store_in(&store, "hermes_profiles:default", &root).is_none());
+        let adapters = all_tool_adapters_in(&store, &root);
+        assert!(adapters
+            .iter()
+            .all(|adapter| adapter.key != "hermes_profiles:default"));
+        // The base hermes adapter is untouched.
+        assert!(adapters.iter().any(|adapter| adapter.key == "hermes"));
     }
 
     #[test]
