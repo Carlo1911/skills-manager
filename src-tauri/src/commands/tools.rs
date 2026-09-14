@@ -617,10 +617,10 @@ mod tests {
                 &serde_json::to_string(&custom_tools).unwrap(),
             )
             .unwrap();
-        let disabled_builtin_tools: Vec<String> = tool_adapters::default_tool_adapters()
-            .into_iter()
-            .map(|adapter| adapter.key)
-            .collect();
+        // all_non_custom_keys (not default_tool_adapters) so dynamically-detected
+        // agents such as Hermes profiles are disabled too and the test never
+        // deploys into the real home directory.
+        let disabled_builtin_tools: Vec<String> = tool_adapters::all_non_custom_keys(store);
         store
             .set_setting(
                 "disabled_tools",

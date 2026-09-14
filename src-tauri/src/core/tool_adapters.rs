@@ -1048,6 +1048,27 @@ fn all_tool_adapters_in(
     adapters
 }
 
+/// Keys of every non-custom adapter: built-ins plus dynamically-detected ones
+/// (e.g. Hermes profiles). "Disable all agents" flows — and the test setups
+/// emulating them — must use this instead of `default_tool_adapters()`, whose
+/// keys miss everything detected at runtime. Missing a dynamic key leaves that
+/// agent enabled; in tests that means deploying into the real home directory
+/// (seen with `hermes_profiles:*` targets).
+pub fn all_non_custom_keys(store: &crate::core::skill_store::SkillStore) -> Vec<String> {
+    all_non_custom_keys_in(store, &hermes_profiles_root_dir())
+}
+
+fn all_non_custom_keys_in(
+    store: &crate::core::skill_store::SkillStore,
+    profiles_root: &Path,
+) -> Vec<String> {
+    all_tool_adapters_in(store, profiles_root)
+        .into_iter()
+        .filter(|adapter| !adapter.is_custom)
+        .map(|adapter| adapter.key)
+        .collect()
+}
+
 #[allow(dead_code)]
 pub fn find_adapter(key: &str) -> Option<ToolAdapter> {
     default_tool_adapters().into_iter().find(|a| a.key == key)
@@ -1112,9 +1133,9 @@ pub fn enabled_installed_adapters(
 #[cfg(test)]
 mod tests {
     use super::{
-        all_tool_adapters, all_tool_adapters_in, default_tool_adapters, find_adapter_with_store,
-        find_adapter_with_store_in, hermes_profile_adapters_from, hermes_profile_display_name,
-        hermes_profiles_root_dir, CustomToolDef, ToolCategory,
+        all_non_custom_keys_in, all_tool_adapters, all_tool_adapters_in, default_tool_adapters,
+        find_adapter_with_store, find_adapter_with_store_in, hermes_profile_adapters_from,
+        hermes_profile_display_name, hermes_profiles_root_dir, CustomToolDef, ToolCategory,
     };
     use crate::core::skill_store::SkillStore;
 
@@ -1383,6 +1404,40 @@ mod tests {
             .all(|adapter| adapter.key != "hermes_profiles:default"));
         // The base hermes adapter is untouched.
         assert!(adapters.iter().any(|adapter| adapter.key == "hermes"));
+    }
+
+    #[test]
+    fn disable_all_non_custom_keys_covers_detected_profiles_but_not_custom_tools() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let root = tmp.path().join(".hermes").join("profiles");
+        std::fs::create_dir_all(root.join("alpha").join("skills")).unwrap();
+        let custom_tools = vec![CustomToolDef {
+            key: "test_agent".to_string(),
+            display_name: "Test Agent".to_string(),
+            skills_dir: tmp
+                .path()
+                .join("agent-skills")
+                .to_string_lossy()
+                .into_owned(),
+            project_relative_skills_dir: None,
+            category: ToolCategory::Lobster,
+            icon: None,
+        }];
+        store
+            .set_setting(
+                "custom_tools",
+                &serde_json::to_string(&custom_tools).unwrap(),
+            )
+            .unwrap();
+
+        // Regression: `default_tool_adapters()` keys miss `hermes_profiles:*`,
+        // so "disable everything" setups built on it left detected profiles
+        // enabled — and sync tests deployed into the real home directory.
+        let keys = all_non_custom_keys_in(&store, &root);
+        assert!(keys.contains(&"hermes".to_string()));
+        assert!(keys.contains(&"hermes_profiles:alpha".to_string()));
+        assert!(!keys.contains(&"test_agent".to_string()));
     }
 
     #[test]
