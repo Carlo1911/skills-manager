@@ -4,6 +4,8 @@ import {
   LayoutGrid,
   List,
   CheckCircle2,
+  ChevronDown,
+  FolderGit2,
   Github,
   HardDrive,
   Globe,
@@ -43,6 +45,7 @@ import { SyncDots } from "../components/SyncDots";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { CardActionMenu } from "../components/CardActionMenu";
 import * as api from "../lib/tauri";
+import { buildRepoGroups, skillRepoKey } from "../lib/skillSource";
 import { getTagActiveColor, getTagColor, pruneStaleTagFilters, UNTAGGED_FILTER } from "../lib/skillTags";
 import type {
   ManagedSkill,
@@ -152,6 +155,9 @@ export function MySkills() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("all");
   const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
+  const [repoFilters, setRepoFilters] = useState<Set<string>>(new Set());
+  const [repoMenuOpen, setRepoMenuOpen] = useState(false);
+  const repoMenuRef = useRef<HTMLDivElement>(null);
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<string[]>([]);
   // Tag management from the filter bar (#233): right-click a tag pill to
@@ -229,6 +235,32 @@ export function MySkills() {
     const available = [...allTags, ...skills.flatMap((skill) => skill.tags)];
     setTagFilters((prev) => pruneStaleTagFilters(prev, available, hasUntagged));
   }, [allTags, skills]);
+  // Drop repo filters whose group vanished (same stale-filter trap as tags).
+  useEffect(() => {
+    if (skills.length === 0) return;
+    const available = new Set(skills.map((skill) => skillRepoKey(skill)));
+    setRepoFilters((prev) => {
+      if (prev.size === 0) return prev;
+      const cleaned = new Set([...prev].filter((key) => available.has(key)));
+      return cleaned.size === prev.size ? prev : cleaned;
+    });
+  }, [skills]);
+  // Close the repo dropdown on outside click or Escape.
+  useEffect(() => {
+    if (!repoMenuOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (repoMenuRef.current && !repoMenuRef.current.contains(e.target as Node)) setRepoMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setRepoMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [repoMenuOpen]);
 
   // Close the tag context menu on Escape (click-outside is handled by its backdrop).
   useEffect(() => {
@@ -254,11 +286,13 @@ export function MySkills() {
   const hasActiveFilters =
     search.trim() !== "" ||
     sourceFilters.size > 0 ||
+    repoFilters.size > 0 ||
     tagFilters.size > 0 ||
     filterMode !== "all";
   const clearFilters = () => {
     setSearch("");
     setSourceFilters(new Set());
+    setRepoFilters(new Set());
     setTagFilters(new Set());
     setFilterMode("all");
   };
@@ -281,6 +315,10 @@ export function MySkills() {
     }
     return displayNames;
   }, [skills]);
+  const repoGroups = useMemo(
+    () => buildRepoGroups(skills, t("mySkills.repoFilter.unknown")),
+    [skills, t]
+  );
 
   const filtered = useMemo(() => {
     const result = skills.filter((skill) => {
@@ -292,6 +330,7 @@ export function MySkills() {
       if (!matchesSearch) return false;
 
       if (sourceFilters.size > 0 && !sourceFilters.has(skill.source_type)) return false;
+      if (repoFilters.size > 0 && !repoFilters.has(skillRepoKey(skill))) return false;
 
       if (tagFilters.size > 0) {
         const wantUntagged = tagFilters.has(UNTAGGED_FILTER);
@@ -325,8 +364,7 @@ export function MySkills() {
     }
 
     return result;
-  }, [skills, skillDisplayNames, search, sourceFilters, tagFilters, filterMode, viewedPreset, presetSkillOrder]);
-
+  }, [skills, skillDisplayNames, search, sourceFilters, repoFilters, tagFilters, filterMode, viewedPreset, presetSkillOrder]);
   const {
     isMultiSelect, setIsMultiSelect,
     selectedIds,
@@ -343,6 +381,7 @@ export function MySkills() {
     filterSignal: JSON.stringify([
       search,
       [...sourceFilters].sort(),
+      [...repoFilters].sort(),
       [...tagFilters].sort(),
       filterMode,
       viewedPreset?.id ?? null,
@@ -1241,6 +1280,66 @@ export function MySkills() {
             {t(`mySkills.sourceFilter.${src}`)}
           </button>
         ))}
+        {repoGroups.length > 0 && (
+          <div ref={repoMenuRef} className="relative">
+            <button
+              type="button"
+              aria-expanded={repoMenuOpen}
+              onClick={() => setRepoMenuOpen((open) => !open)}
+              title={t("mySkills.repoFilter.label")}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors",
+                repoFilters.size > 0
+                  ? "bg-accent text-white dark:bg-accent dark:text-white"
+                  : "bg-surface-hover text-muted hover:text-secondary"
+              )}
+            >
+              <FolderGit2 className="h-3 w-3" />
+              {t("mySkills.repoFilter.label")}
+              {repoFilters.size > 0 && <span>({repoFilters.size})</span>}
+              <ChevronDown className={cn("h-3 w-3 transition-transform", repoMenuOpen && "rotate-180")} />
+            </button>
+            {repoMenuOpen && (
+              <div className="absolute left-0 top-full z-30 mt-1 min-w-[220px] max-w-[300px] rounded-lg border border-border bg-surface p-1 shadow-lg">
+                {repoGroups.map((group) => {
+                  const active = repoFilters.has(group.key);
+                  return (
+                    <button
+                      key={group.key}
+                      type="button"
+                      onClick={() => setRepoFilters(toggleFilter(repoFilters, group.key))}
+                      title={group.key}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] outline-none transition-colors",
+                        active ? "bg-surface-active text-primary" : "text-secondary hover:bg-surface-hover"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border",
+                          active ? "border-accent bg-accent text-white" : "border-border text-transparent"
+                        )}
+                      >
+                        <CheckCircle2 className="h-3 w-3" />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{group.label}</span>
+                      <span className="shrink-0 text-[12px] text-muted">{group.count}</span>
+                    </button>
+                  );
+                })}
+                {repoFilters.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setRepoFilters(new Set())}
+                    className="mt-1 flex w-full items-center justify-center rounded-md px-2 py-1.5 text-[12px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary"
+                  >
+                    {t("mySkills.repoFilter.clear")}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         {allTags.length > 0 && (
           <>
             <span className="mx-0.5 h-3 w-px bg-border-subtle" />

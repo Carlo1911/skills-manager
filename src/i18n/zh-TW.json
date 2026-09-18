@@ -374,6 +374,11 @@
       "git": "Git",
       "skillssh": "skills.sh"
     },
+    "repoFilter": {
+      "label": "儲存庫",
+      "unknown": "未知來源",
+      "clear": "清除"
+    },
     "tags": {
       "filter": "標籤",
       "allTags": "全部標籤",

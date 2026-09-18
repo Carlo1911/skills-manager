@@ -404,6 +404,11 @@
       "git": "Git",
       "skillssh": "skills.sh"
     },
+    "repoFilter": {
+      "label": "Repo",
+      "unknown": "Unknown source",
+      "clear": "Clear"
+    },
     "tags": {
       "filter": "Tags",
       "allTags": "All Tags",
