@@ -333,7 +333,8 @@
     "filters": {
       "all": "Todos",
       "available": "Disponibles",
-      "enabled": "Habilitados"
+      "enabled": "Habilitados",
+      "updateable": "Actualizables"
     },
     "gitConfigEntry": "Configuración de sincronización",
     "gitCurrentVersionRestored": "Actual: restaurado desde {{tag}}",

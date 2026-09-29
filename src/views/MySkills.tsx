@@ -46,6 +46,7 @@ import { ToggleSwitch } from "../components/ToggleSwitch";
 import { CardActionMenu } from "../components/CardActionMenu";
 import * as api from "../lib/tauri";
 import { buildRepoGroups, skillRepoKey } from "../lib/skillSource";
+import { canRefresh, matchesSkillLibraryFilter, type SkillLibraryFilter } from "../lib/skillLibraryFilter";
 import { getTagActiveColor, getTagColor, pruneStaleTagFilters, UNTAGGED_FILTER } from "../lib/skillTags";
 import type {
   ManagedSkill,
@@ -153,7 +154,7 @@ export function MySkills() {
     refreshProjects,
   } = useApp();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("all");
+  const [filterMode, setFilterMode] = useState<SkillLibraryFilter>("all");
   const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
   const [repoFilters, setRepoFilters] = useState<Set<string>>(new Set());
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
@@ -339,12 +340,7 @@ export function MySkills() {
         if (!matchUntagged && !matchTag) return false;
       }
 
-      if (!viewedPreset) return true;
-
-      const enabledInPreset = skill.preset_ids.includes(viewedPreset.id);
-      if (filterMode === "enabled") return enabledInPreset;
-      if (filterMode === "available") return !enabledInPreset;
-      return true;
+      return matchesSkillLibraryFilter(skill, filterMode, viewedPreset?.id ?? null);
     });
 
     // Always sort enabled skills first; within enabled group, use custom sort order
@@ -1084,11 +1080,6 @@ export function MySkills() {
     }
   };
 
-  const canRefresh = (skill: ManagedSkill) =>
-    skill.source_type === "git" ||
-    skill.source_type === "skillssh" ||
-    ((skill.source_type === "local" || skill.source_type === "import") && !!skill.source_ref);
-
   const anyRefreshableSelected = useMemo(
     () => skills.some((skill) => selectedIds.has(skill.id) && canRefresh(skill)),
     [skills, selectedIds]
@@ -1173,10 +1164,11 @@ export function MySkills() {
           </div>
 
           <div className="app-segmented app-toolbar-segmented shrink-0">
-            {(["all", "enabled", "available"] as const).map((mode) => (
+            {(["all", "enabled", "available", "updateable"] as const).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setFilterMode(mode)}
+                aria-pressed={filterMode === mode}
                 className={cn(
                   "app-segmented-button",
                   filterMode === mode && "app-segmented-button-active"

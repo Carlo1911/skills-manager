@@ -379,7 +379,8 @@
     "filters": {
       "all": "全部",
       "enabled": "當前 Preset 已啟用",
-      "available": "當前 Preset 未啟用"
+      "available": "當前 Preset 未啟用",
+      "updateable": "可更新"
     },
     "sourceType": "來源類型",
     "sourceFilter": {

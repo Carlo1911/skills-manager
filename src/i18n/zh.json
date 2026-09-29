@@ -410,7 +410,8 @@
     "filters": {
       "all": "全部",
       "enabled": "当前 Preset 已启用",
-      "available": "当前 Preset 未启用"
+      "available": "当前 Preset 未启用",
+      "updateable": "可更新"
     },
     "sourceFilter": {
       "all": "全部来源",
