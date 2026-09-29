@@ -10,6 +10,7 @@ use crate::commands::skills::{
 };
 use crate::core::repo_lock::RepoLock;
 use crate::core::skill_store::SkillStore;
+use crate::core::skill_update_progress::{UpdateProgress, UpdateStatus};
 
 const SETTING_INTERVAL: &str = "auto_update_check_interval";
 const SETTING_LAST_RUN: &str = "auto_update_last_run_at";
@@ -126,9 +127,10 @@ fn is_due(last_run: Option<DateTime<Utc>>, interval: Duration) -> bool {
     elapsed >= interval_chrono
 }
 
-async fn run_round<R: Runtime>(_app: &AppHandle<R>, store: &Arc<SkillStore>) -> Result<(), String> {
+async fn run_round<R: Runtime>(app: &AppHandle<R>, store: &Arc<SkillStore>) -> Result<(), String> {
     let store_for_task = store.clone();
-    tauri::async_runtime::spawn_blocking(move || run_round_blocking(&store_for_task))
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn_blocking(move || run_round_blocking(&app_for_task, &store_for_task))
         .await
         .map_err(|err| format!("join error: {err}"))??;
     Ok(())
@@ -143,15 +145,17 @@ fn apply_enabled(store: &SkillStore) -> bool {
     )
 }
 
-fn run_round_blocking(store: &SkillStore) -> Result<(), String> {
+fn run_round_blocking<R: Runtime>(app: &AppHandle<R>, store: &SkillStore) -> Result<(), String> {
     let proxy = store.proxy_url();
     let apply = apply_enabled(store);
-    let ids: Vec<String> = store
-        .get_all_skills()
-        .map_err(|err| format!("get_all_skills failed: {err}"))?
-        .into_iter()
-        .map(|s| s.id)
-        .collect();
+    let skills = store.get_all_skills()
+        .map_err(|err| format!("get_all_skills failed: {err}"))?;
+    // Silent check-only rounds stay silent. Opt-in automatic updates show the
+    // same per-skill progress as a foreground batch, including the check phase.
+    let mut progress = apply.then(|| UpdateProgress::new(
+        app.clone(), skills.iter().map(|s| (s.id.clone(), s.name.clone())).collect(),
+    ));
+    let ids: Vec<String> = skills.into_iter().map(|s| s.id).collect();
 
     // Take and release the central-repo lock around each individual skill
     // check. This bounds the worst-case wait for any user-initiated manual
@@ -165,6 +169,9 @@ fn run_round_blocking(store: &SkillStore) -> Result<(), String> {
         // it again for the next skill (see FOREGROUND_YIELD).
         std::thread::sleep(FOREGROUND_YIELD);
         checked += 1;
+        if let Some(progress) = &mut progress {
+            progress.report(&skill_id, UpdateStatus::Checking, None);
+        }
 
         // Resolve the remote before taking the lock: the lock must never be
         // held across a network round-trip, or a slow remote fails every
@@ -179,6 +186,9 @@ fn run_round_blocking(store: &SkillStore) -> Result<(), String> {
                 Err(_) => {
                     failed += 1;
                     log::info!("skill auto-updater: skipping {skill_id} (repo busy)");
+                    if let Some(progress) = &mut progress {
+                        progress.report(&skill_id, UpdateStatus::Failed, Some("Repository busy; will retry next round".into()));
+                    }
                     continue;
                 }
             };
@@ -187,29 +197,55 @@ fn run_round_blocking(store: &SkillStore) -> Result<(), String> {
                 Err(err) => {
                     failed += 1;
                     log::warn!("skill auto-updater: check failed for {skill_id}: {err}");
+                    if let Some(progress) = &mut progress {
+                        progress.report(&skill_id, UpdateStatus::Failed, Some(err.message.clone()));
+                    }
                     continue;
                 }
             }
         };
 
         if status != "update_available" {
+            if let Some(progress) = &mut progress {
+                // A check can return an error/unknown status without throwing.
+                let state = if status == "up_to_date" || status == "local_only" {
+                    UpdateStatus::Unchanged
+                } else {
+                    UpdateStatus::Failed
+                };
+                progress.report(&skill_id, state, None);
+            }
             continue;
         }
         available += 1;
 
         if apply {
+            if let Some(progress) = &mut progress {
+                progress.report(&skill_id, UpdateStatus::Updating, None);
+            }
             match update_git_skill_internal(store, &skill_id, proxy.as_deref(), None, None) {
                 Ok(result) if !result.pending_removals.is_empty() => {
                     held_back += 1;
+                    if let Some(progress) = &mut progress {
+                        progress.report(&skill_id, UpdateStatus::HeldBack, None);
+                    }
                     log::info!(
                         "skill auto-updater: holding back {skill_id} — updating would remove {} \
                          path(s) the new version does not have; update it by hand to review",
                         result.pending_removals.len()
                     );
                 }
-                Ok(_) => updated += 1,
+                Ok(result) => {
+                    updated += 1;
+                    if let Some(progress) = &mut progress {
+                        progress.report(&skill_id, if result.content_changed { UpdateStatus::Updated } else { UpdateStatus::Unchanged }, None);
+                    }
+                }
                 Err(err) => {
                     failed += 1;
+                    if let Some(progress) = &mut progress {
+                        progress.report(&skill_id, UpdateStatus::Failed, Some(err.message.clone()));
+                    }
                     log::warn!(
                         "skill auto-updater: update failed for {skill_id}: {}",
                         err.message

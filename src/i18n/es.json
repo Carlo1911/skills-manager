@@ -1,4 +1,19 @@
 {
+  "skillUpdateProgress": {
+    "title": "Actualizando skills",
+    "finished": "Actualización de skills finalizada",
+    "count": "{{completed}} de {{total}} skills procesadas",
+    "dismiss": "Cerrar resumen de actualización",
+    "status": {
+      "pending": "Pendiente",
+      "checking": "Buscando actualizaciones",
+      "updating": "Actualizando…",
+      "updated": "Actualizada",
+      "unchanged": "Ya está al día",
+      "held_back": "Sin actualizar: hay archivos que requieren revisión antes de eliminarlos",
+      "failed": "Error al actualizar"
+    }
+  },
   "app": {
     "name": "Skills Manager"
   },

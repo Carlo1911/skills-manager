@@ -1,4 +1,19 @@
 {
+  "skillUpdateProgress": {
+    "title": "Updating skills",
+    "finished": "Skill update finished",
+    "count": "{{completed}} of {{total}} skills processed",
+    "dismiss": "Dismiss update summary",
+    "status": {
+      "pending": "Pending",
+      "checking": "Checking for updates",
+      "updating": "Updating…",
+      "updated": "Updated",
+      "unchanged": "Already up to date",
+      "held_back": "Not updated: file removals need review",
+      "failed": "Update failed"
+    }
+  },
   "app": {
     "name": "Skills Manager"
   },

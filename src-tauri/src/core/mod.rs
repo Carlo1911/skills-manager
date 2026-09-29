@@ -27,6 +27,7 @@ pub mod scenario_service;
 pub mod skill_auto_updater;
 pub mod skill_metadata;
 pub mod skill_store;
+pub mod skill_update_progress;
 pub mod skillssh_api;
 pub mod sync_engine;
 pub mod sync_metadata;

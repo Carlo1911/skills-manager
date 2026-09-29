@@ -18,6 +18,7 @@ use crate::core::{
     scanner,
     skill_metadata::{self, is_valid_skill_dir},
     skill_store::{SkillRecord, SkillStore, SkillTargetRecord},
+    skill_update_progress::{UpdateProgress, UpdateStatus},
     sync_engine, sync_metadata,
     timing::should_log_first_or_slow,
 };
@@ -1576,58 +1577,68 @@ pub async fn reimport_local_skill(
 pub async fn batch_update_skills(
     skill_ids: Vec<String>,
     store: State<'_, Arc<SkillStore>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<BatchUpdateSkillsResult, AppError> {
     let store = store.inner().clone();
     let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
+        let mut seen = HashSet::new();
+        let skill_ids: Vec<_> = skill_ids.into_iter().filter(|id| seen.insert(id.clone())).collect();
+        let names = skill_ids.iter().map(|id| {
+            let name = store.get_skill_by_id(id).ok().flatten()
+                .map(|skill| skill.name).unwrap_or_else(|| id.clone());
+            (id.clone(), name)
+        }).collect();
+        let mut progress = UpdateProgress::new(app_handle, names);
         let mut refreshed = 0usize;
         let mut unchanged = 0usize;
         let mut failed = Vec::new();
         let mut held_back = Vec::new();
 
         for skill_id in skill_ids {
+            progress.report(&skill_id, UpdateStatus::Updating, None);
             let skill = match store.get_skill_by_id(&skill_id).map_err(AppError::db)? {
                 Some(skill) => skill,
                 None => {
+                    progress.report(&skill_id, UpdateStatus::Failed, Some("Skill not found".into()));
                     failed.push(format!("{skill_id}: Skill not found"));
                     continue;
                 }
             };
 
-            match skill.source_type.as_str() {
+            // Keep the existing removal approval and audit behavior. Progress
+            // reflects the actual result; held-back skills were NOT updated.
+            let outcome = match skill.source_type.as_str() {
                 "git" | "skillssh" => {
                     let outcome =
                         update_git_skill_internal(&store, &skill_id, proxy_url.as_deref(), None, None);
                     log_update_outcome(&store, &skill_id, "git", outcome.as_ref());
-                    match outcome {
-                        Ok(result) if !result.pending_removals.is_empty() => {
-                            // Held back rather than applied: it would have taken
-                            // away files the new version does not have, and a
-                            // batch has nobody to ask.
-                            held_back.push(skill.name.clone());
-                        }
-                        Ok(result) => {
-                            if result.content_changed {
-                                refreshed += 1;
-                            } else {
-                                unchanged += 1;
-                            }
-                        }
-                        Err(err) => failed.push(format!("{}: {}", skill.name, err.message)),
-                    }
+                    outcome.map(|result| (result.content_changed, !result.pending_removals.is_empty()))
                 }
                 "local" | "import" => {
                     let outcome = reimport_local_skill_internal(&store, &skill_id, None);
                     log_reimport_outcome(&store, &skill_id, outcome.as_ref());
-                    match outcome {
-                        Ok(result) if !result.pending_removals.is_empty() => {
-                            held_back.push(skill.name.clone());
-                        }
-                        Ok(_) => refreshed += 1,
-                        Err(err) => failed.push(format!("{}: {}", skill.name, err.message)),
-                    }
+                    outcome.map(|result| (true, !result.pending_removals.is_empty()))
                 }
-                _ => failed.push(format!("{}: Source type cannot be refreshed", skill.name)),
+                _ => Err(AppError::invalid_input("Source type cannot be refreshed")),
+            };
+            match outcome {
+                Ok((_, true)) => {
+                    held_back.push(skill.name.clone());
+                    progress.report(&skill_id, UpdateStatus::HeldBack, None);
+                }
+                Ok((true, false)) => {
+                    refreshed += 1;
+                    progress.report(&skill_id, UpdateStatus::Updated, None);
+                }
+                Ok((false, false)) => {
+                    unchanged += 1;
+                    progress.report(&skill_id, UpdateStatus::Unchanged, None);
+                }
+                Err(err) => {
+                    progress.report(&skill_id, UpdateStatus::Failed, Some(err.message.clone()));
+                    failed.push(format!("{}: {}", skill.name, err.message));
+                }
             }
         }
 

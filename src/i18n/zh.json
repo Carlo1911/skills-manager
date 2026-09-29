@@ -1,4 +1,19 @@
 {
+  "skillUpdateProgress": {
+    "title": "正在更新技能",
+    "finished": "技能更新已结束",
+    "count": "已处理 {{completed}} / {{total}} 个技能",
+    "dismiss": "关闭更新摘要",
+    "status": {
+      "pending": "等待中",
+      "checking": "正在检查更新",
+      "updating": "正在更新…",
+      "updated": "已更新",
+      "unchanged": "已是最新版本",
+      "held_back": "未更新：需要确认文件删除",
+      "failed": "更新失败"
+    }
+  },
   "app": {
     "name": "Skills Manager"
   },
