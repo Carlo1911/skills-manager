@@ -10,11 +10,13 @@ BUNDLE_DIR := src-tauri/target/release/bundle/macos
 CLI_BIN := src-tauri/target/release/skills-manager-cli
 CLI_LINK := $(HOME)/.local/bin/skills-manager-cli
 
-.PHONY: help sync dev build install cli update check clean
+.PHONY: help auth sync push dev build install cli update check clean
 
 help:
 	@echo "Targets:"
-	@echo "  make sync     - merge fork and upstream (origin) into $(SYNC_BRANCH), preserving local commits"
+	@echo "  make auth     - verify/switch GitHub account to Carlo1911 and configure local Git credentials"
+	@echo "  make sync     - verify account, then merge fork and upstream into $(SYNC_BRANCH)"
+	@echo "  make push     - verify account, then publish $(SYNC_BRANCH) to fork"
 	@echo "  make check    - cargo check + tsc --noEmit + eslint"
 	@echo "  make dev      - run the app in dev mode (npm run tauri:dev)"
 	@echo "  make build    - produce a release .app bundle (npm run tauri:build)"
@@ -23,14 +25,21 @@ help:
 	@echo "  make update   - sync + build + install + cli, all in one go"
 	@echo "  make clean    - remove build artifacts (src-tauri/target)"
 
+auth:
+	@sh scripts/ensure-github-account.sh
+
+push: auth
+	git push fork $(SYNC_BRANCH)
+
 sync:
 	@test -z "$$(git status --porcelain)" || (echo "Commit or stash local changes (including untracked files) before syncing." && exit 1)
+	$(MAKE) auth
 	git fetch origin
 	git fetch fork
 	git switch $(SYNC_BRANCH)
 	git merge --no-edit fork/$(SYNC_BRANCH)
 	git merge --no-edit origin/main
-	@echo "Synced without rewriting history. After verification, push with: git push fork $(SYNC_BRANCH)"
+	@echo "Synced without rewriting history. After verification, publish with: make push"
 
 check:
 	cd src-tauri && cargo check
