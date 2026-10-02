@@ -567,6 +567,20 @@
         "pending": "Pendientes"
       },
       "summary": "Se analizaron {{tools}} carpetas de herramientas y se encontraron {{skills}} skills importables.",
+      "sort": {
+        "label": "Ordenar por",
+        "name": "Nombre",
+        "date": "Fecha de modificación",
+        "agent": "Agente",
+        "location": "Ubicación",
+        "direction": "Dirección",
+        "ascending": "Ascendente (A–Z)",
+        "descending": "Descendente (Z–A)",
+        "oldest": "Más antiguos primero",
+        "newest": "Más recientes primero",
+        "dateHint": "Fecha de modificación de la carpeta; si hay varias ubicaciones, se usa la más antigua. No es la fecha de importación.",
+        "multiLocationHint": "Cada skill conserva todas sus ubicaciones. Por agente o ubicación se compara la lista alfabética completa, empezando por su primer valor. Las ubicaciones se muestran siempre en orden ascendente."
+      },
       "title": "Analizar skills locales"
     },
     "searchMarket": "Buscar en el mercado de skills.sh...",

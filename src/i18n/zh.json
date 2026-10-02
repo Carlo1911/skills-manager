@@ -562,6 +562,20 @@
       "empty": "未发现可导入的技能"
     },
     "scan": {
+      "sort": {
+        "label": "排序依据",
+        "name": "名称",
+        "date": "修改日期",
+        "agent": "Agent",
+        "location": "位置",
+        "direction": "排序方向",
+        "ascending": "升序（A–Z）",
+        "descending": "降序（Z–A）",
+        "oldest": "最早优先",
+        "newest": "最新优先",
+        "dateHint": "文件夹的修改日期；多个位置使用最早的日期。这不是导入日期。",
+        "multiLocationHint": "每个技能保留所有位置。按 Agent 或位置排序时，按字母顺序比较完整列表，从第一个值开始。位置始终按升序显示。"
+      },
       "title": "扫描本地 Skills 并导入",
       "initial": "扫描当前机器上各 Agent 已安装的 Skills。",
       "summary": "已扫描 {{tools}} 个工具目录，发现 {{skills}} 个可导入 Skills。",

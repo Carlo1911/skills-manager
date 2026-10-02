@@ -562,6 +562,20 @@
       "empty": "No importable skills found"
     },
     "scan": {
+      "sort": {
+        "label": "Sort by",
+        "name": "Name",
+        "date": "Modification date",
+        "agent": "Agent",
+        "location": "Location",
+        "direction": "Direction",
+        "ascending": "Ascending (A–Z)",
+        "descending": "Descending (Z–A)",
+        "oldest": "Oldest first",
+        "newest": "Newest first",
+        "dateHint": "Folder modification date; for multiple locations, the oldest date is used. This is not the import date.",
+        "multiLocationHint": "Each skill keeps all its locations. Agent/location sorting compares the full alphabetically sorted list, starting with its first value. Locations are always displayed in ascending order."
+      },
       "title": "Scan Local Skills",
       "initial": "Scan agent skill folders already present on this machine.",
       "summary": "Scanned {{tools}} tool folders and found {{skills}} importable skills.",

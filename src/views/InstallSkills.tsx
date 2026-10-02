@@ -34,6 +34,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { StatusBanner } from "../components/StatusBanner";
+import { sortLocalSkills, sortLocalLocations, type LocalSkillSort, type SortDirection } from "../lib/localSkillSort";
 import { getErrorMessage, getErrorKind } from "../lib/error";
 
 const MARKET_PAGE_SIZE = 24;
@@ -68,6 +69,8 @@ export function InstallSkills() {
   const [gitConfirmLoading, setGitConfirmLoading] = useState(false);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
+  const [localSort, setLocalSort] = useState<LocalSkillSort>("name");
+  const [localSortDirection, setLocalSortDirection] = useState<SortDirection>("asc");
   const [localError, setLocalError] = useState<string | null>(null);
   const [importingPaths, setImportingPaths] = useState<Set<string>>(new Set());
   const [importingAll, setImportingAll] = useState(false);
@@ -599,7 +602,10 @@ export function InstallSkills() {
     scrollMarketListToTop();
   };
 
-  const scanGroups = scanResult?.groups ?? [];
+  const scanGroups = useMemo(
+    () => sortLocalSkills(scanResult?.groups ?? [], localSort, localSortDirection),
+    [scanResult, localSort, localSortDirection],
+  );
   const pendingGroups = scanGroups.filter((group) => !group.imported);
   const sourceOptions = useMemo(
     () => Array.from(new Set(marketSkills.map((skill) => skill.source))),
@@ -1293,6 +1299,34 @@ export function InstallSkills() {
             </div>
 
             <div className="space-y-4 p-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-[13px] text-secondary">
+                  {t("install.scan.sort.label")}
+                  <select
+                    value={localSort}
+                    onChange={(event) => setLocalSort(event.target.value as LocalSkillSort)}
+                    className="rounded-lg border border-border bg-surface px-2 py-1.5 text-[13px]"
+                  >
+                    {(["name", "date", "agent", "location"] as const).map((key) => (
+                      <option key={key} value={key}>{t(`install.scan.sort.${key}`)}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-[13px] text-secondary">
+                  {t("install.scan.sort.direction")}
+                  <select
+                    value={localSortDirection}
+                    onChange={(event) => setLocalSortDirection(event.target.value as SortDirection)}
+                    className="rounded-lg border border-border bg-surface px-2 py-1.5 text-[13px]"
+                  >
+                    <option value="asc">{t(`install.scan.sort.${localSort === "date" ? "oldest" : "ascending"}`)}</option>
+                    <option value="desc">{t(`install.scan.sort.${localSort === "date" ? "newest" : "descending"}`)}</option>
+                  </select>
+                </label>
+                <p className="w-full text-[12px] text-muted">
+                  {t(`install.scan.sort.${localSort === "date" ? "dateHint" : "multiLocationHint"}`)}
+                </p>
+              </div>
               {scanLoading ? (
                 <div className="flex items-center justify-center gap-2.5 py-12 text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -1312,8 +1346,9 @@ export function InstallSkills() {
                 <>
                   <div className="app-panel-muted overflow-hidden">
                     {scanGroups.map((group) => {
-                      const [primaryLocation, ...otherLocations] = group.locations;
-                      const primaryPath = primaryLocation?.found_path;
+                      const [primaryLocation, ...otherLocations] = sortLocalLocations(group, localSort);
+                      // Sorting is presentation-only: preserve the scan's import source.
+                      const primaryPath = group.locations[0]?.found_path;
                       const isImporting = !!primaryPath && importingPaths.has(primaryPath);
                       const isRenaming = group.name in renameEditing;
                       const importName = renameEditing[group.name] ?? group.name;
@@ -1324,7 +1359,7 @@ export function InstallSkills() {
                       });
 
                       return (
-                        <article key={group.name} className="border-b border-border-subtle last:border-b-0">
+                        <article key={JSON.stringify([group.name, group.fingerprint, group.locations.map((location) => location.found_path).sort()])} className="border-b border-border-subtle last:border-b-0">
                           <div className="flex items-start justify-between gap-3 px-3 py-2">
                             <div className="min-w-0 flex-1 space-y-1.5">
                               <div className="flex min-w-0 items-center gap-2">
@@ -1382,7 +1417,7 @@ export function InstallSkills() {
                                 <span className="shrink-0 rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[13px] text-muted">
                                   {t("install.scan.locations", { count: group.locations.length })}
                                 </span>
-                                <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted">
+                                <span title={t("install.scan.sort.dateHint")} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted">
                                   <Calendar className="h-3 w-3" />
                                   {foundDate}
                                 </span>
@@ -1393,7 +1428,7 @@ export function InstallSkills() {
                                   <span className="inline-flex shrink-0 rounded-[4px] border border-border-subtle bg-surface px-1.5 py-px text-[13px] font-medium text-tertiary">
                                     {primaryLocation.tool}
                                   </span>
-                                  <code className="block min-w-0 truncate text-[13px] text-tertiary">
+                                  <code title={primaryLocation.found_path} className="block min-w-0 truncate text-[13px] text-tertiary">
                                     {primaryLocation.found_path}
                                   </code>
                                 </div>
@@ -1426,7 +1461,7 @@ export function InstallSkills() {
                                     <span className="inline-flex shrink-0 rounded-[4px] border border-border-subtle bg-surface px-1.5 py-px text-[13px] font-medium text-tertiary">
                                       {location.tool}
                                     </span>
-                                    <code className="block min-w-0 truncate text-[13px] text-muted">
+                                    <code title={location.found_path} className="block min-w-0 truncate text-[13px] text-muted">
                                       {location.found_path}
                                     </code>
                                   </div>
