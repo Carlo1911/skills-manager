@@ -497,6 +497,22 @@
     "gitAlreadyInstalled": "\"{{name}}\" ya está instalado. Reinstalarlo lo actualizará.",
     "gitDesc": "Introduce la URL de un repositorio Git público o privado. Para repositorios privados, asegúrate de tener configuradas las claves SSH.",
     "gitInstall": "Instalación de Git",
+    "gitRepos": {
+      "title": "Repositorios Git instalados",
+      "description": "Repositorios de origen de tus skills, incluidas las instaladas desde skills.sh. Despliega un repositorio para ver sus skills y ubicaciones locales.",
+      "empty": "No hay repositorios Git instalados.",
+      "skillCount": "{{count}} skills instaladas",
+      "remove": "Eliminar repositorio",
+      "viewSkills": "Ver skills y ubicaciones",
+      "confirmTitle": "¿Eliminar repositorio?",
+      "confirmDescription": "Elimina permanentemente estas {{count}} skills de la biblioteca central, los presets y los despliegues administrados en agentes. Para recuperarlas tendrás que reinstalarlas.",
+      "confirmRemove": "Eliminar {{count}} skills",
+      "removeCache": "Eliminar también los clones Git en caché de esta Mac",
+      "safeScope": "Solo se elimina la caché de repositorios de Skills Manager. No se tocan clones independientes en Projects ni otras carpetas. Los archivos de bloqueo se conservan por seguridad.",
+      "removed": "{{count}} skills eliminadas; {{caches}} clones en caché eliminados.",
+      "removePartial": "{{deleted}} skills eliminadas; {{failed}} no pudieron eliminarse. Se conservó la caché del repositorio.",
+      "cacheFailed": "Skills eliminadas, pero falló la limpieza de la caché del repositorio: {{message}}"
+    },
     "gitPreview": {
       "confirm": "Importar seleccionados",
       "deselectAll": "Deseleccionar todo",

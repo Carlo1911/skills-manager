@@ -552,6 +552,22 @@
     "gitAlreadyInstalled": "\"{{name}}\" is already installed. Reinstalling will update it.",
     "onlyThisContributor": "Only this contributor",
     "installClone": "Clone & Preview",
+    "gitRepos": {
+      "title": "Installed Git repositories",
+      "description": "Repositories supplying your library skills, including skills.sh installs. Expand a repository to see skills and local locations.",
+      "empty": "No Git repositories installed.",
+      "skillCount": "{{count}} installed skills",
+      "remove": "Remove repository",
+      "viewSkills": "View skills and locations",
+      "confirmTitle": "Remove repository?",
+      "confirmDescription": "Permanently remove these {{count}} skills from the central library, presets, and managed agent deployments. Reinstalling is required to undo this.",
+      "confirmRemove": "Remove {{count}} skills",
+      "removeCache": "Also delete cached Git checkouts from this Mac",
+      "safeScope": "Only Skills Manager's repository cache is removed. Independent clones in Projects or other folders are not touched. Lock files remain for safe concurrent access.",
+      "removed": "{{count}} skills removed; {{caches}} cached checkouts deleted.",
+      "removePartial": "{{deleted}} skills removed; {{failed}} could not be removed. Repository cache was kept.",
+      "cacheFailed": "Skills removed, but repository cache cleanup failed: {{message}}"
+    },
     "gitPreview": {
       "title": "Select Skills to Import",
       "description": "The following skills were found in the repository. Rename them if needed, then confirm.",

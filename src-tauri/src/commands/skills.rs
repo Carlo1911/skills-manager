@@ -195,6 +195,11 @@ pub struct BatchDeleteSkillsResult {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PurgeGitRepoCacheResult {
+    pub removed: usize,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ManagedSkillDto {
     pub id: String,
     pub name: String,
@@ -742,6 +747,18 @@ pub async fn delete_managed_skills(
         .await?
 }
 
+#[tauri::command]
+pub async fn purge_git_repo_cache(
+    repo_urls: Vec<String>,
+) -> Result<PurgeGitRepoCacheResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_fetcher::purge_repo_cache_for_urls(&repo_urls)
+            .map(|removed| PurgeGitRepoCacheResult { removed })
+            .map_err(AppError::io)
+    })
+    .await?
+}
+
 pub fn delete_managed_skills_by_ids(
     store: &SkillStore,
     skill_ids: &[String],
@@ -771,7 +788,15 @@ pub fn delete_managed_skills_by_ids(
 
             let central = PathBuf::from(&skill.central_path);
             if central.exists() {
-                std::fs::remove_dir_all(&central).ok();
+                if let Err(error) = std::fs::remove_dir_all(&central) {
+                    store.log_audit(
+                        AuditDraft::new("remove")
+                            .skill(skill_id.clone(), skill.name.clone())
+                            .fail(error.to_string()),
+                    );
+                    failed.push(skill_id.clone());
+                    continue;
+                }
             }
 
             store.delete_skill(skill_id)?;
@@ -3507,6 +3532,19 @@ mod tests {
             last_checked_at: None,
             last_check_error: None,
         }
+    }
+
+    #[test]
+    fn batch_delete_reports_filesystem_failure_without_forgetting_skill() {
+        let repo = test_repo();
+        let invalid_directory = central_repo::skills_dir().join("not-a-directory");
+        fs::write(&invalid_directory, "keep this file").unwrap();
+        repo.store.insert_skill(&sample_skill("failed", "failed", &invalid_directory)).unwrap();
+        let result = delete_managed_skills_by_ids(&repo.store, &["failed".to_string()]).unwrap();
+        assert_eq!(result.deleted, 0);
+        assert_eq!(result.failed, vec!["failed".to_string()]);
+        assert!(repo.store.get_skill_by_id("failed").unwrap().is_some());
+        assert!(invalid_directory.exists());
     }
 
     #[test]

@@ -268,6 +268,13 @@ export interface BatchDeleteSkillsResult {
 export const deleteManagedSkills = (skillIds: string[]) =>
   invoke<BatchDeleteSkillsResult>("delete_managed_skills", { skillIds });
 
+export interface PurgeGitRepoCacheResult {
+  removed: number;
+}
+
+export const purgeGitRepoCache = (repoUrls: string[]) =>
+  invoke<PurgeGitRepoCacheResult>("purge_git_repo_cache", { repoUrls });
+
 export const installLocal = (sourcePath: string, name?: string) =>
   invoke<void>("install_local", { sourcePath, name: name || null });
 

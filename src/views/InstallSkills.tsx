@@ -22,13 +22,14 @@ import {
   MoreHorizontal,
   Pencil,
   Calendar,
+  Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/tauri";
-import type { ScanResult, SkillsShSkill, BatchImportResult, GitPreviewResult } from "../lib/tauri";
+import type { ScanResult, SkillsShSkill, BatchImportResult, GitPreviewResult, ManagedSkill } from "../lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSearchParams, useNavigate } from "react-router-dom";
@@ -36,6 +37,8 @@ import { listen } from "@tauri-apps/api/event";
 import { StatusBanner } from "../components/StatusBanner";
 import { sortLocalSkills, sortLocalLocations, type LocalSkillSort, type SortDirection } from "../lib/localSkillSort";
 import { getErrorMessage, getErrorKind } from "../lib/error";
+import { buildRepoGroups, skillRepoKey } from "../lib/skillSource";
+import { GitRepoRemoveDialog } from "../components/GitRepoRemoveDialog";
 
 const MARKET_PAGE_SIZE = 24;
 const MARKET_SEARCH_STEP = 60;
@@ -45,6 +48,13 @@ const MARKET_SEARCH_CACHE_MAX_ENTRIES = 150;
 // skills.sh lists skills a website publishes itself under /site/<domain>/<skill>;
 // their source is the domain, not a GitHub owner/repo.
 const SKILLS_SH_SITE_REF = /\/site\/([^/]+)\/([^/?#]+)\/?$/;
+
+type InstalledGitRepo = {
+  key: string;
+  skills: ManagedSkill[];
+  urls: string[];
+  branches: string[];
+};
 
 export function InstallSkills() {
   const { t } = useTranslation();
@@ -70,6 +80,9 @@ export function InstallSkills() {
   const [gitPreviewRepoUrl, setGitPreviewRepoUrl] = useState<string | null>(null);
   const [gitSelections, setGitSelections] = useState<{ rel_path: string; name: string; description: string | null; selected: boolean }[]>([]);
   const [gitConfirmLoading, setGitConfirmLoading] = useState(false);
+  const [repoToRemove, setRepoToRemove] = useState<InstalledGitRepo | null>(null);
+  const [removeRepoCache, setRemoveRepoCache] = useState(true);
+  const [removingRepoKey, setRemovingRepoKey] = useState<string | null>(null);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [localSort, setLocalSort] = useState<LocalSkillSort>("name");
@@ -553,6 +566,44 @@ export function InstallSkills() {
     }
   };
 
+  const handleRemoveInstalledRepo = async () => {
+    if (!repoToRemove || removingRepoKey) return;
+    const repo = repoToRemove;
+    setRemovingRepoKey(repo.key);
+    try {
+      const result = await api.deleteManagedSkills(repo.skills.map((skill) => skill.id));
+      let removedCaches = 0;
+      let cacheFailed = false;
+      if (result.failed.length === 0 && removeRepoCache && repo.urls.length > 0) {
+        try {
+          const cacheResult = await api.purgeGitRepoCache(repo.urls);
+          removedCaches = cacheResult.removed;
+        } catch (error: unknown) {
+          cacheFailed = true;
+          toast.error(t("install.gitRepos.cacheFailed", { message: getErrorMessage(error, t("common.error")) }));
+        }
+      }
+      if (result.failed.length > 0) {
+        toast.error(t("install.gitRepos.removePartial", {
+          deleted: result.deleted,
+          failed: result.failed.length,
+        }));
+      } else if (!cacheFailed) {
+        toast.success(t("install.gitRepos.removed", {
+          count: result.deleted,
+          caches: removedCaches,
+        }));
+      }
+      setRepoToRemove(null);
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    } finally {
+      const results = await Promise.allSettled([refreshPresets(), refreshManagedSkills()]);
+      warnRejected(results, "post-repository-removal refresh");
+      setRemovingRepoKey(null);
+    }
+  };
+
   const handleImportDiscovered = async (sourcePath: string, name: string) => {
     setImportingPaths((prev) => new Set(prev).add(sourcePath));
     try {
@@ -617,6 +668,23 @@ export function InstallSkills() {
     () => Array.from(new Set(marketSkills.map((skill) => skill.source))),
     [marketSkills]
   );
+  const installedGitRepos = useMemo<InstalledGitRepo[]>(() => {
+    const gitSkills = managedSkills.filter((skill) => skill.source_type === "git" || skill.source_type === "skillssh");
+    const groups = buildRepoGroups(gitSkills, t("mySkills.repoFilter.unknown"));
+    return groups
+      .filter((group) => group.kind === "git" && group.key !== "unknown")
+      .map((group) => {
+        const skills = gitSkills.filter((skill) => skillRepoKey(skill) === group.key);
+        const urls = Array.from(new Set(
+          skills.flatMap((skill) => [skill.source_ref, skill.source_ref_resolved])
+            .filter((value): value is string => Boolean(value && value.trim()))
+        ));
+        const branches = Array.from(new Set(
+          skills.map((skill) => skill.source_branch).filter((value): value is string => Boolean(value))
+        ));
+        return { key: group.key, skills, urls, branches };
+      });
+  }, [managedSkills, t]);
 
   // Measure how many source pills can fit in one row; reserve room for All + More.
   const computeVisibleCount = useCallback(() => {
@@ -1491,7 +1559,7 @@ export function InstallSkills() {
       )}
 
       {activeTab === "git" && (
-        <div className="animate-in fade-in duration-300">
+        <div className="space-y-4 pb-8 animate-in fade-in duration-300">
           <div className="app-panel max-w-lg p-5">
             <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-surface-hover">
               <Github className="h-5 w-5 text-tertiary" />
@@ -1552,8 +1620,56 @@ export function InstallSkills() {
               </div>
             </div>
           </div>
+
+          <section className="app-panel overflow-hidden">
+            <div className="border-b border-border-subtle px-4 py-3.5">
+              <h2 className="text-[14px] font-semibold text-secondary">{t("install.gitRepos.title")} ({installedGitRepos.length})</h2>
+              <p className="mt-1 text-[13px] text-muted">{t("install.gitRepos.description")}</p>
+            </div>
+            {installedGitRepos.length === 0 ? (
+              <p className="px-4 py-8 text-center text-[13px] text-muted">{t("install.gitRepos.empty")}</p>
+            ) : installedGitRepos.map((repo) => (
+              <article key={repo.key} className="border-b border-border-subtle last:border-b-0 px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="break-all text-[13px] font-semibold text-secondary">{repo.key}</h3>
+                    <p className="mt-1 text-[12px] text-muted">{t("install.gitRepos.skillCount", { count: repo.skills.length })}</p>
+                    {repo.urls.map((url) => <code key={url} className="mt-1 block break-all text-[12px] text-muted">{url}</code>)}
+                    {repo.branches.length > 0 && <p className="mt-1 text-[12px] text-muted">{t("mySkills.sourceBranch")}: {repo.branches.join(", ")}</p>}
+                  </div>
+                  <button type="button" disabled={removingRepoKey !== null || gitLoading || gitConfirmLoading || gitPreview !== null}
+                    onClick={() => { setRemoveRepoCache(true); setRepoToRemove(repo); }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-2 text-[13px] text-red-500 hover:bg-red-500/10 disabled:opacity-50">
+                    <Trash2 className="h-3.5 w-3.5" />{t("install.gitRepos.remove")}
+                  </button>
+                </div>
+                <details className="mt-3 text-[13px]">
+                  <summary className="cursor-pointer text-accent-light">{t("install.gitRepos.viewSkills")}</summary>
+                  <ul className="mt-2 max-h-80 overflow-y-auto divide-y divide-border-subtle">
+                    {repo.skills.map((skill) => (
+                      <li key={skill.id} className="py-2">
+                        <button type="button" onClick={() => { openSkillDetailById(skill.id); navigate("/my-skills"); }} className="font-medium text-secondary hover:text-accent-light">{skill.name}</button>
+                        <code className="mt-1 block break-all text-[12px] text-muted">{skill.central_path}</code>
+                        {skill.source_subpath && <code className="block break-all text-[12px] text-muted">{t("mySkills.sourceSubpath")}: {skill.source_subpath}</code>}
+                        {skill.targets.map((target) => <code key={target.id} className="block break-all text-[12px] text-muted">{target.tool}: {target.target_path}</code>)}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              </article>
+            ))}
+          </section>
         </div>
       )}
+
+      <GitRepoRemoveDialog
+        repo={repoToRemove}
+        removeCache={removeRepoCache}
+        onRemoveCacheChange={setRemoveRepoCache}
+        busy={removingRepoKey !== null}
+        onClose={() => { if (!removingRepoKey) setRepoToRemove(null); }}
+        onConfirm={handleRemoveInstalledRepo}
+      />
 
       {/* Git preview / selection dialog */}
       {gitPreview && (

@@ -133,6 +133,55 @@ fn repo_cache_dir_for(url: &str, sparse: bool) -> PathBuf {
     central_repo::cache_dir().join("repos").join(name)
 }
 
+/// Remove cached full and sparse checkouts for the provided clone URLs.
+///
+/// Installed skills are copied into the central library, so cache deletion is
+/// safe after removing those skills. Missing cache slots are ignored because a
+/// repository may only have been used through one checkout mode, or may have
+/// been evicted by the cache limiter already.
+pub fn purge_repo_cache_for_urls(urls: &[String]) -> anyhow::Result<usize> {
+    let mut dirs = Vec::new();
+    for url in urls {
+        if url.trim().is_empty() {
+            continue;
+        }
+        validate_git_url(url)?;
+        let parsed = parse_git_source(url);
+        for sparse in [false, true] {
+            let dir = repo_cache_dir_for(&parsed.clone_url, sparse);
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    purge_repo_cache_dirs(&dirs)
+}
+
+fn purge_repo_cache_dirs(dirs: &[PathBuf]) -> anyhow::Result<usize> {
+    // Acquire every lock before deleting anything, so a busy slot never causes
+    // a half-cleaned repository. Do not unlink lock files: that could create
+    // multiple independently locked inodes for one checkout.
+    let mut slots = Vec::new();
+    for dir in dirs {
+        let metadata = match std::fs::symlink_metadata(dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("Refusing to delete unexpected repository cache {}", dir.display());
+        }
+        let file = OpenOptions::new().create(true).read(true).write(true)
+            .open(dir.with_extension("lock"))?;
+        file.try_lock_exclusive().with_context(|| "Repository cache is in use; retry when installation finishes")?;
+        slots.push((dir, RepoCacheLock { _file: file }));
+    }
+    for (dir, _lock) in &slots {
+        std::fs::remove_dir_all(dir)?;
+    }
+    Ok(slots.len())
+}
+
 /// Upper bound on the whole repo cache.
 ///
 /// A backstop, not a quota. Nothing ever deleted a cache slot before, so a
@@ -1625,6 +1674,51 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn purge_cache_removes_only_requested_slots_and_keeps_locks() {
+        let tmp = tempdir().unwrap();
+        let full = tmp.path().join("repo");
+        let sparse = tmp.path().join("repo-sparse");
+        let other = tmp.path().join("unrelated");
+        for dir in [&full, &sparse, &other] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("data"), "cached files").unwrap();
+        }
+        assert_eq!(purge_repo_cache_dirs(&[full.clone(), sparse.clone()]).unwrap(), 2);
+        assert!(!full.exists());
+        assert!(!sparse.exists());
+        assert!(other.join("data").exists());
+        assert!(full.with_extension("lock").exists());
+        assert!(sparse.with_extension("lock").exists());
+        assert_eq!(purge_repo_cache_dirs(&[full, sparse]).unwrap(), 0);
+    }
+
+    #[test]
+    fn purge_cache_busy_slot_preserves_all_slots() {
+        let tmp = tempdir().unwrap();
+        let first = tmp.path().join("first");
+        let busy = tmp.path().join("busy");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&busy).unwrap();
+        let _lock = lock_repo_cache(&busy, &None).unwrap();
+        assert!(purge_repo_cache_dirs(&[first.clone(), busy.clone()]).is_err());
+        assert!(first.exists());
+        assert!(busy.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_cache_refuses_symlinked_checkout() {
+        let tmp = tempdir().unwrap();
+        let outside = tmp.path().join("project");
+        let link = tmp.path().join("cache");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), "user files").unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(purge_repo_cache_dirs(&[link]).is_err());
+        assert!(outside.join("keep").exists());
+    }
 
     // ── parse_git_source ──
 
