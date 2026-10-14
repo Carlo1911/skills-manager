@@ -34,6 +34,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
+import { useSkillViewMode } from "../hooks/useSkillViewMode";
 import { useMultiSelect } from "../hooks/useMultiSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { TagRenameDialog } from "../components/TagRenameDialog";
@@ -153,7 +154,7 @@ export function MySkills() {
     projects,
     refreshProjects,
   } = useApp();
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [viewMode, setViewMode] = useSkillViewMode();
   const [filterMode, setFilterMode] = useState<SkillLibraryFilter>("all");
   const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
   const [repoFilters, setRepoFilters] = useState<Set<string>>(new Set());
@@ -2050,7 +2051,7 @@ export function MySkills() {
                 setTagToDelete(tagMenu.tag);
                 setTagMenu(null);
               }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-400 hover:bg-surface-hover"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-600 dark:text-red-400 hover:bg-surface-hover"
             >
               <Trash2 className="h-3.5 w-3.5" />
               {t("mySkills.tags.deleteTag")}

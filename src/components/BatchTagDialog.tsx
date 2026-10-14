@@ -149,7 +149,7 @@ export function BatchTagDialog({ open, skills, allTags, note, onClose, onApply }
                       }
                     >
                       {tag}
-                      <span className="text-[10px] opacity-70">
+                      <span className="text-[11px] opacity-70">
                         {count}/{skills.length}
                       </span>
                       <X className="h-2.5 w-2.5" />

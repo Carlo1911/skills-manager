@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.0] - 2026-10-11
+
+### Release Overview
+- Skills that websites publish themselves, including Feishu/Lark's official skills, now install from the market; restoring a backup no longer loses local skills; plus Escape to close details, a remembered view and window size, and a folder shortcut on project pages.
+
+### User-facing
+- **Install skills that websites publish themselves** — skills.sh also lists skills hosted on a company's own site rather than on GitHub, such as Feishu/Lark's official `lark-*` skills. Installing them failed because the app looked for a GitHub repository that does not exist. They now install from the market, from a pasted `skills.sh/site/…` link, or with `skills-manager-cli skills install`, and `skills search` prints a ref you can install as-is. Downloads use HTTPS only and are checked for size, paths and checksums. These skills are snapshots: they are not checked for updates, and reinstalling fetches the current version. Thanks to @samuelbushi (#382, #381).
+- **Restoring a backup no longer loses local skills** — Cloning a remote backup onto a library that already had skills silently replaced a local skill that shared its name with a different remote copy, and re-cloning deleted commits that were never pushed. A clone now stops and puts everything back when same-named skills differ, and offers to save your local versions to a `skills-local-copies-…` folder next to the library before continuing. Re-clone keeps the old history unless all of it is in the remote (#531, #532).
+- **Escape closes the skill detail panel**, unless a dialog or the command palette is on top. Thanks to @GoodScholar (#494, #453).
+- **The grid/list choice is remembered** across the Library, agent workspaces and projects, and after a restart; grid stays the default. Thanks to @GoodScholar (#493, #442).
+- **The window reopens where you left it** — its position and size are restored at launch. If it was on a monitor that is no longer connected, the system places it instead. Thanks to @yinfall (#404).
+- **Show a project's folder in the file manager** by clicking the folder icon next to the project's name. Thanks to @ZhuYichuan (#473).
+- **Git installs accept `owner/repo.git` and `ssh://` addresses** — they were rewritten into addresses that do not exist (`….git.git`, `github.com/ssh://…`). Thanks to @crmmc (#517, #516).
+
+### Developer & Governance
+- New `core/well_known.rs` reads a site's `/.well-known/agent-skills/` or `/.well-known/skills/` index (v1 file lists and v2 archives with a digest). Website skills are recorded as source type `well-known`, keyed by their canonical `skills.sh/site/<domain>/<skill>` URL. The install-target rule they share with skills.sh installs now also refuses a folder that exists on disk without a record.
+- `core/file_manager.rs` gathers the tray, Settings and log-export file-manager calls; its arguments stay `OsString`, so paths that are not valid UTF-8 pass through unchanged (#537).
+- `tauri-plugin-window-state` is added; the main window starts hidden and is shown once its saved state is restored.
+- New `frontend.yml` CI runs lint and the production build whenever frontend sources, config or the lockfile change.
 ## [1.40.3] - 2026-10-02
 
 ### Release Overview

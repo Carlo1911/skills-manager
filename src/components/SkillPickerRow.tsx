@@ -88,7 +88,7 @@ export function SkillPickerRow({
               <span
                 key={tag}
                 className={cn(
-                  "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10.5px] font-medium",
+                  "inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-medium",
                   getTagColor(tag, allTags),
                 )}
               >

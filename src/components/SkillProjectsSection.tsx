@@ -228,7 +228,7 @@ export function SkillProjectsSection({ skill, projects, onChanged }: Props) {
             <div
               key={project.id}
               className={cn(
-                "rounded-md border border-border-subtle bg-background px-3 py-2 text-[12.5px]",
+                "rounded-md border border-border-subtle bg-background px-3 py-2 text-[13px]",
                 row?.state === "installed" && "border-emerald-500/30 bg-emerald-500/5",
               )}
             >

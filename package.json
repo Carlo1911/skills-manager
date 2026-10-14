@@ -1,13 +1,13 @@
 {
   "name": "skills-manager",
   "private": true,
-  "version": "1.40.3",
+  "version": "1.41.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "eslint . && node scripts/check-ui-spec.mjs",
     "preview": "vite preview",
     "release:prepare": "node scripts/prepare-release.mjs",
     "tauri": "tauri",

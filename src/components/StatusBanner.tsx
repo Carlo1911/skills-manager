@@ -20,15 +20,15 @@ export function StatusBanner({
 }: StatusBannerProps) {
   const toneClass =
     tone === "danger"
-      ? "border-red-500/25 bg-red-500/10 text-red-100"
-      : "border-amber-500/25 bg-amber-500/10 text-amber-50";
+      ? "border-red-500/25 bg-red-500/10"
+      : "border-amber-500/25 bg-amber-500/10";
 
-  const iconClass = tone === "danger" ? "text-red-300" : "text-amber-300";
+  const iconClass = tone === "danger" ? "text-red-600 dark:text-red-300" : "text-amber-600 dark:text-amber-300";
 
   return (
     <div
       className={cn(
-        "rounded-xl border px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+        "rounded-xl border px-4 py-3 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
         toneClass,
         compact && "px-3.5 py-3"
       )}

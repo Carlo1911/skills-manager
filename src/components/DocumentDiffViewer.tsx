@@ -197,7 +197,7 @@ function DiffCell({
         {number ?? ""}
       </td>
       <td
-        className={cn("border-r border-border-subtle px-3 font-mono text-[12.5px] leading-6", tone.codeClass)}
+        className={cn("border-r border-border-subtle px-3 font-mono text-[13px] leading-6", tone.codeClass)}
         style={tone.codeStyle}
       >
         <span className={cn("mr-3 inline-block w-3 select-none text-center font-semibold", tone.markerClass)}>
