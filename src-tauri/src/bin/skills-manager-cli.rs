@@ -791,6 +791,7 @@ fn run_tools(args: ToolsArgs, store: &SkillStore, json: bool) -> anyhow::Result<
                 name.as_deref().unwrap_or(&key),
                 &path,
                 project_path.as_deref(),
+                None,
             )
             .map_err(map_app_err)?;
             store.log_audit(AuditDraft::new("add_custom_agent").tool(key.clone()).ok());

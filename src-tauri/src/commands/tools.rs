@@ -395,7 +395,6 @@ pub async fn add_custom_tool(
 ) -> Result<(), AppError> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-<<<<<<< HEAD
         let icon = icon
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
