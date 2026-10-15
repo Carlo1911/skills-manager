@@ -98,10 +98,11 @@ pub fn sanitize_device_name(raw: &str) -> String {
         .to_string()
 }
 
-/// Synthetic per-device author email: an ASCII slug of the device name at a
-/// reserved domain. Only used to make `git log`/shortlog distinguish devices;
-/// it never has to be routable.
-fn device_email(device_name: &str) -> String {
+/// ASCII slug of a device name, used both for the synthetic commit-author
+/// email and as the per-device key for skill enabled state. Deterministic
+/// and filesystem/JSON-safe: lowercase alphanumerics joined by single
+/// dashes, falling back to `"device"` when nothing survives.
+pub(crate) fn device_slug_for_name(device_name: &str) -> String {
     let mut slug = String::new();
     for c in device_name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -111,8 +112,43 @@ fn device_email(device_name: &str) -> String {
         }
     }
     let slug = slug.trim_matches('-');
-    let slug = if slug.is_empty() { "device" } else { slug };
-    format!("{slug}@skills-manager.local")
+    if slug.is_empty() {
+        "device".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// Synthetic per-device author email: an ASCII slug of the device name at a
+/// reserved domain. Only used to make `git log`/shortlog distinguish devices;
+/// it never has to be routable.
+fn device_email(device_name: &str) -> String {
+    format!("{}@skills-manager.local", device_slug_for_name(device_name))
+}
+
+/// This device's slug for per-device skill state: the slug of the effective
+/// device name (the `backup_device_name` setting, else a persisted
+/// hostname-derived default). Mirrors the `effective_device_name` pattern in
+/// commands/git_backup.rs, which cannot be used here (commands cannot be a
+/// dependency of core).
+pub(crate) fn device_slug(store: &super::skill_store::SkillStore) -> String {
+    let saved = store
+        .get_setting("backup_device_name")
+        .ok()
+        .flatten()
+        .map(|v| sanitize_device_name(&v))
+        .filter(|v| !v.is_empty());
+    let name = match saved {
+        Some(name) => name,
+        None => {
+            let name = default_device_name();
+            if let Err(e) = store.set_setting("backup_device_name", &name) {
+                log::warn!("device slug: failed to persist default: {e:#}");
+            }
+            name
+        }
+    };
+    device_slug_for_name(&name)
 }
 
 /// Write the device name into the repo-local git identity (§4.3: device name

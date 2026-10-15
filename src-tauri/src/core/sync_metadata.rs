@@ -12,7 +12,7 @@ use super::repo_lock::RepoLock;
 use super::skill_metadata;
 use super::skill_store::{ScenarioRecord, SkillRecord, SkillStore};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const APP_MIN_VERSION: &str = "2.0.0";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +39,8 @@ pub struct SkillMetaFile {
     pub path: String,
     pub path_key: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub devices: BTreeMap<String, bool>,
     pub tags: Vec<String>,
     pub source: SourceMeta,
 }
@@ -128,6 +130,36 @@ pub fn reindex_from_metadata(store: &SkillStore) -> Result<()> {
     reindex_from_metadata_unlocked(store)
 }
 
+/// Effective enabled flag for this device (opción C).
+///
+/// `devices[mi-slug]`, when present, is the answer. Otherwise the legacy
+/// global `meta.enabled` freezes as the published default: pre-per-device
+/// clients deactivated skills by writing `enabled=false`, so a skill with
+/// no `devices` entry and `enabled=false` still reads as disabled the
+/// first time — and the caller materializes it into `skill_device_state`.
+/// New skills (no previous local row, no devices entry) start from the
+/// published flag; other devices' entries never decide for us.
+pub fn effective_enabled_for(
+    meta: &SkillMetaFile,
+    my_slug: &str,
+    previous_enabled: Option<bool>,
+) -> bool {
+    if let Some(mine) = meta.devices.get(my_slug) {
+        return *mine;
+    }
+    if meta.devices.is_empty() {
+        // Legacy metadata (or an old client): the global flag is the
+        // published state. Existing rows keep their local value unless the
+        // published flag turned false; new skills take the published flag.
+        return match previous_enabled {
+            Some(prev) => prev && meta.enabled,
+            None => meta.enabled,
+        };
+    }
+    // Other devices have entries but we don't: fresh skill for us.
+    false
+}
+
 pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
     if !metadata_exists() {
         return Ok(());
@@ -169,6 +201,7 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
         .map(|skill| (skill.id.clone(), skill))
         .collect();
 
+    let my_slug = super::git_backup::device_slug(store);
     // Every surviving row gets its central_path rewritten below; park them
     // on placeholders first so path reassignments between skills (renames or
     // merge collision reshuffles) cannot trip the UNIQUE constraint mid-loop.
@@ -204,6 +237,7 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
             _ => now,
         };
 
+        let effective = effective_enabled_for(&meta, &my_slug, previous.map(|s| s.enabled));
         let record = SkillRecord {
             id: meta.skill_id.clone(),
             name,
@@ -217,7 +251,7 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
             remote_revision: previous.and_then(|s| s.remote_revision.clone()),
             central_path,
             content_hash: new_hash,
-            enabled: meta.enabled,
+            enabled: effective,
             created_at: previous.map(|s| s.created_at).unwrap_or(now),
             updated_at,
             status: "ok".to_string(),
@@ -229,6 +263,24 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
         };
         store.upsert_skill(&record)?;
         store.set_tags_for_skill(&meta.skill_id, &meta.tags)?;
+        // Materialize the effective flag so the next metadata write carries
+        // it under our own slug. Guarded to our own missing entry only, and
+        // only when the merged `devices{}` map AGREES with the computed
+        // effective value for us — so a merge another device must still
+        // interpret never rewrites our local opt-out, while a fresh legacy
+        // row still gets its first explicit entry.
+        let merged_mine = meta.devices.get(&my_slug).copied();
+        let have_mine = store.get_device_state(&meta.skill_id, &my_slug)?;
+        let should_materialize = match (have_mine, merged_mine) {
+            (Some(_), _) => false,
+            (None, Some(m)) => m == effective,
+            (None, None) => true,
+        };
+        if should_materialize {
+            if let Err(e) = store.set_device_state(&meta.skill_id, &my_slug, effective) {
+                log::warn!("reindex: failed to materialize device state: {e:#}");
+            }
+        }
     }
 
     if has_complete_scenario_snapshot {
@@ -252,7 +304,11 @@ pub(crate) fn ensure_skill_metadata_unlocked(store: &SkillStore, skill_id: &str)
         .get_skill_by_id(skill_id)?
         .ok_or_else(|| anyhow!("skill not found: {skill_id}"))?;
     let tags = store.get_tags_map()?.remove(skill_id).unwrap_or_default();
-    write_skill_file(&skill, &tags)
+    let devices = store
+        .explicit_device_states_for_skill(skill_id)?
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    write_skill_file(&skill, &tags, &devices)
 }
 
 pub fn cleanup_temporary_files() -> Result<()> {
@@ -296,7 +352,13 @@ fn metadata_has_complete_scenario_snapshot() -> bool {
 fn write_skill_records_from_db(store: &SkillStore) -> Result<()> {
     let mut tags = store.get_tags_map()?;
     for skill in store.get_all_skills()? {
-        write_skill_file(&skill, &tags.remove(&skill.id).unwrap_or_default())?;
+        // Only user-decided rows reach the shared blob; derived (reindex
+        // materialized) rows stay DB-local so commits don't churn (§10).
+        let devices = store
+            .explicit_device_states_for_skill(&skill.id)?
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        write_skill_file(&skill, &tags.remove(&skill.id).unwrap_or_default(), &devices)?;
     }
     Ok(())
 }
@@ -410,7 +472,11 @@ fn remove_stale_json_files(dir: &Path, expected_stems: &HashSet<String>) -> Resu
     Ok(())
 }
 
-fn write_skill_file(skill: &SkillRecord, tags: &[String]) -> Result<()> {
+fn write_skill_file(
+    skill: &SkillRecord,
+    tags: &[String],
+    devices: &BTreeMap<String, bool>,
+) -> Result<()> {
     let path = relative_skill_path(&skill.central_path)?;
     let tags = sorted_tags(tags);
     let source_ref = match skill.source_type.as_str() {
@@ -423,6 +489,7 @@ fn write_skill_file(skill: &SkillRecord, tags: &[String]) -> Result<()> {
         path_key: path_key(&path),
         path,
         enabled: skill.enabled,
+        devices: devices.clone(),
         tags,
         source: SourceMeta {
             source_type: skill.source_type.clone(),
@@ -431,12 +498,27 @@ fn write_skill_file(skill: &SkillRecord, tags: &[String]) -> Result<()> {
             branch: skill.source_branch.clone(),
         },
     };
-    atomic_write_json(
-        &metadata_dir()
-            .join("skills")
-            .join(format!("{}.json", skill.id)),
-        &meta,
-    )
+    let out_path = metadata_dir()
+        .join("skills")
+        .join(format!("{}.json", skill.id));
+    // Convergence (§10): reindex materializes our own slug into the DB, but
+    // the on-disk blob must not churn when nothing device-visible changed.
+    // Otherwise every commit rewrites every skill JSON with our own
+    // `devices{slug}` entry and no two devices ever produce the same bytes,
+    // breaking fast-forwards and clean-deletion propagation.
+    if let Ok(existing) = fs::read(&out_path) {
+        if let Ok(old) = serde_json::from_slice::<SkillMetaFile>(&existing) {
+            if old.path == meta.path
+                && old.path_key == meta.path_key
+                && old.tags == meta.tags
+                && old.source == meta.source
+                && old.devices == meta.devices
+            {
+                return Ok(());
+            }
+        }
+    }
+    atomic_write_json(&out_path, &meta)
 }
 
 fn write_scenario_file(scenario: &ScenarioRecord) -> Result<()> {
@@ -839,5 +921,114 @@ mod tests {
             after.updated_at, 1_000_000,
             "updated_at must be refreshed when skill content changes"
         );
+    }
+
+    #[test]
+    fn devices_round_trip_through_metadata_and_reindex() {
+        let repo = test_repo();
+        repo.store
+            .set_setting("backup_device_name", "My Laptop")
+            .unwrap();
+        let skill_dir = write_skill_dir("device-skill");
+        repo.store
+            .insert_skill(&sample_skill("skill-dev", &skill_dir))
+            .unwrap();
+        repo.store
+            .set_device_state_explicit("skill-dev", "my-laptop", false, true)
+            .unwrap();
+        repo.store
+            .set_device_state_explicit("skill-dev", "office-desktop", true, true)
+            .unwrap();
+
+        write_all_from_db_unlocked(&repo.store).unwrap();
+        let raw = fs::read_to_string(metadata_dir().join("skills/skill-dev.json")).unwrap();
+        let file: SkillMetaFile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(file.schema_version, 2);
+        assert_eq!(file.devices.get("my-laptop"), Some(&false));
+        assert_eq!(file.devices.get("office-desktop"), Some(&true));
+
+        // Reindex on this device (my-laptop): effective=false materializes.
+        let restored = SkillStore::new(&central_repo::base_dir().join("restored-dev.db")).unwrap();
+        restored
+            .set_setting("backup_device_name", "My Laptop")
+            .unwrap();
+        reindex_from_metadata_unlocked(&restored).unwrap();
+        let row = restored.get_skill_by_id("skill-dev").unwrap().unwrap();
+        assert!(!row.enabled);
+        assert_eq!(
+            restored.get_device_state("skill-dev", "my-laptop").unwrap(),
+            Some(false)
+        );
+        // device_states_for_skill is NOT materialized wholesale — only our
+        // own row is written by reindex.
+        assert_eq!(
+            restored.get_device_state("skill-dev", "office-desktop").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn legacy_disabled_skill_materializes_on_first_reindex() {
+        let repo = test_repo();
+        repo.store
+            .set_setting("backup_device_name", "My Laptop")
+            .unwrap();
+        let skill_dir = write_skill_dir("legacy-skill");
+        let mut record = sample_skill("skill-legacy", &skill_dir);
+        record.enabled = false;
+        repo.store.insert_skill(&record).unwrap();
+        write_all_from_db_unlocked(&repo.store).unwrap();
+
+        // Simulate an old client: strip devices{} but keep enabled=false.
+        let path = metadata_dir().join("skills/skill-legacy.json");
+        let raw = fs::read_to_string(&path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        value.as_object_mut().unwrap().remove("devices");
+        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let restored = SkillStore::new(&central_repo::base_dir().join("restored-legacy.db")).unwrap();
+        restored
+            .set_setting("backup_device_name", "My Laptop")
+            .unwrap();
+        reindex_from_metadata_unlocked(&restored).unwrap();
+        let row = restored.get_skill_by_id("skill-legacy").unwrap().unwrap();
+        assert!(!row.enabled, "legacy enabled=false must be respected");
+        assert_eq!(
+            restored.get_device_state("skill-legacy", "my-laptop").unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn effective_enabled_for_unit_cases() {
+        let mut meta = SkillMetaFile {
+            schema_version: 2,
+            skill_id: "s".to_string(),
+            path: "p".to_string(),
+            path_key: "p".to_string(),
+            enabled: true,
+            devices: BTreeMap::new(),
+            tags: vec![],
+            source: SourceMeta {
+                source_type: "import".to_string(),
+                ref_: None,
+                subpath: None,
+                branch: None,
+            },
+        };
+        // Own entry wins over everything.
+        meta.devices.insert("mine".to_string(), false);
+        assert!(!effective_enabled_for(&meta, "mine", Some(true)));
+        // Empty devices + legacy flag: new skills take it verbatim.
+        meta.devices.clear();
+        assert!(effective_enabled_for(&meta, "mine", None));
+        meta.enabled = false;
+        assert!(!effective_enabled_for(&meta, "mine", None));
+        // Empty devices + legacy false + existing enabled row: stays off.
+        assert!(!effective_enabled_for(&meta, "mine", Some(true)));
+        // Other devices' entries never decide for us.
+        meta.enabled = true;
+        meta.devices.insert("other".to_string(), true);
+        assert!(!effective_enabled_for(&meta, "mine", Some(true)));
     }
 }

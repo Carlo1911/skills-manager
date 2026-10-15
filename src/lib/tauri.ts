@@ -267,6 +267,46 @@ export interface BatchDeleteSkillsResult {
 
 export const deleteManagedSkills = (skillIds: string[]) =>
   invoke<BatchDeleteSkillsResult>("delete_managed_skills", { skillIds });
+export interface DeviceSkillState {
+  slug: string;
+  enabled: boolean;
+  isMine: boolean;
+}
+
+export interface DeviceSkillStates {
+  states: DeviceSkillState[];
+  globalEnabled: boolean;
+  mySlug: string;
+}
+
+/**
+ * Per-device enabled overlay (opcion C). Sets this device's entry in
+ * skill_device_state; the backend also refreshes `skills.enabled` locally
+ * so the list shows the effective value without a refetch.
+ */
+export const setSkillDeviceEnabled = (skillId: string, enabled: boolean) =>
+  invoke<void>("set_skill_device_enabled", { skillId, enabled });
+
+/** Delete this device's override; the skill falls back to the global value. */
+export const resetSkillDeviceOverride = (skillId: string) =>
+  invoke<void>("reset_skill_device_override", { skillId });
+
+/**
+ * Raw backend payload uses snake_case; this wrapper maps it to camelCase so
+ * the UI follows the TS convention. `states` is sorted by slug.
+ */
+export const getDeviceSkillStates = async (skillId: string): Promise<DeviceSkillStates> => {
+  const raw = await invoke<{
+    states: { slug: string; enabled: boolean; is_mine: boolean }[];
+    global_enabled: boolean;
+    my_slug: string;
+  }>("device_skill_states", { skillId });
+  return {
+    states: raw.states.map((s) => ({ slug: s.slug, enabled: s.enabled, isMine: s.is_mine })),
+    globalEnabled: raw.global_enabled,
+    mySlug: raw.my_slug,
+  };
+}
 
 export interface PurgeGitRepoCacheResult {
   removed: number;

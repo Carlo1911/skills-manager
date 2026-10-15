@@ -762,6 +762,65 @@ pub async fn git_backup_size_report() -> Result<git_backup::BackupSizeReport, Ap
         .await?
 }
 
+/// Device slugs that have ever recorded state for a skill: the union of slugs
+/// in `skill_device_state` and keys of `devices{}` in the on-disk metadata
+/// (`.skills-manager/skills/{id}.json`), so the "delete everywhere" dialog can
+/// count affected devices even when one hasn't synced recently. Slugs of
+/// devices that never touched this skill (no entry anywhere) are unknowable
+/// and excluded. Read-only; unknown skills yield an empty list, never an error.
+#[tauri::command]
+pub async fn device_slugs_for_skill(
+    store: State<'_, Arc<SkillStore>>,
+    skill_id: String,
+) -> Result<Vec<String>, AppError> {
+    let store = store.inner().clone();
+    tokio::task::spawn_blocking(move || device_slugs_for_skill_blocking(&store, &skill_id)).await?
+}
+
+fn device_slugs_for_skill_blocking(
+    store: &SkillStore,
+    skill_id: &str,
+) -> Result<Vec<String>, AppError> {
+    let mut slugs = std::collections::BTreeSet::new();
+    // DB entries. A pre-v9 database has no table, which surfaces as an error —
+    // treat as empty rather than failing the dialog.
+    match store.device_states_for_skill(skill_id) {
+        Ok(rows) => {
+            for (slug, _) in rows {
+                slugs.insert(slug);
+            }
+        }
+        Err(e) => {
+            log::warn!("device slugs: cannot read device state for {skill_id}: {e:#}");
+        }
+    }
+    // On-disk metadata `devices{}` keys. Parsed as untyped JSON so this keeps
+    // working across schema versions; a missing or unreadable file just means
+    // no device has published state through this checkout yet.
+    let meta_path = sync_metadata::metadata_dir()
+        .join("skills")
+        .join(format!("{skill_id}.json"));
+    match std::fs::read(&meta_path) {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(value) => {
+                if let Some(devices) = value.get("devices").and_then(|d| d.as_object()) {
+                    for slug in devices.keys() {
+                        slugs.insert(slug.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("device slugs: cannot parse {}: {e:#}", meta_path.display());
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            log::warn!("device slugs: cannot read {}: {e:#}", meta_path.display());
+        }
+    }
+    Ok(slugs.into_iter().collect())
+}
+
 /// Migrate credentials embedded in the remote URL (`user:token@host`) into
 /// the OS keychain (§3.7). Rewrites `.git/config` and the saved setting to
 /// the credential-free URL, verifies authentication still works, and rolls
@@ -856,6 +915,58 @@ fn migrate_embedded_credentials_unlocked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_slugs_unions_db_entries_and_json_keys() {
+        let env = test_env();
+        // `skill_device_state` references `skills(id)`: need the parent row.
+        let central_path = env.skills_dir.join("s1").to_string_lossy().to_string();
+        env.store
+            .insert_skill(&crate::core::skill_store::SkillRecord {
+                id: "s1".to_string(),
+                name: "s1".to_string(),
+                description: None,
+                source_type: "import".to_string(),
+                source_ref: None,
+                source_ref_resolved: None,
+                source_subpath: None,
+                source_branch: None,
+                source_revision: None,
+                remote_revision: None,
+                central_path,
+                content_hash: None,
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+                status: "ok".to_string(),
+                update_status: "local_only".to_string(),
+                last_checked_at: None,
+                last_check_error: None,
+            })
+            .unwrap();
+        // DB side: two slugs known through sync.
+        env.store.set_device_state("s1", "laptop-a", true).unwrap();
+        env.store.set_device_state("s1", "laptop-b", false).unwrap();
+        // JSON side: one overlapping slug plus one device that has not
+        // synced recently (only published in `devices{}`).
+        let dir = sync_metadata::metadata_dir().join("skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s1.json"),
+            r#"{"devices": {"laptop-b": true, "stale-tablet": false}}"#,
+        )
+        .unwrap();
+
+        let slugs = device_slugs_for_skill_blocking(&env.store, "s1").unwrap();
+        assert_eq!(slugs, vec!["laptop-a", "laptop-b", "stale-tablet"]);
+    }
+
+    #[test]
+    fn device_slugs_empty_for_unknown_skill() {
+        let env = test_env();
+        let slugs = device_slugs_for_skill_blocking(&env.store, "missing").unwrap();
+        assert!(slugs.is_empty());
+    }
 
     struct TestEnv {
         _lock: std::sync::MutexGuard<'static, ()>,

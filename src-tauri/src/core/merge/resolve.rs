@@ -172,12 +172,24 @@ fn apply_use_remote(
         }
     }
 
+    // Union the local and remote `devices{}` maps: each device only writes
+    // its own slug, so disjoint keys compose (same-key divergence keeps the
+    // local value — the resolution adopted the remote content, and the
+    // next backup round re-publishes whichever side is effective here).
+    let mut devices = local_meta
+        .as_ref()
+        .map(|m| m.devices.clone())
+        .unwrap_or_default();
+    for (slug, enabled) in &theirs_skill.meta.devices {
+        devices.entry(slug.clone()).or_insert(*enabled);
+    }
     let meta = SkillMetaFile {
-        schema_version: theirs_skill.meta.schema_version,
+        schema_version: theirs_skill.meta.schema_version.max(2),
         skill_id: skill_id.to_string(),
         path_key: path_key(&target_path),
         path: target_path,
         enabled: theirs_skill.meta.enabled,
+        devices,
         tags: theirs_skill.meta.tags.clone(),
         source: theirs_skill.meta.source.clone(),
     };
@@ -218,11 +230,12 @@ fn apply_keep_both(
     place_staged(&staged, skills_dir, &target_path)?;
 
     let meta = SkillMetaFile {
-        schema_version: theirs_skill.meta.schema_version,
+        schema_version: theirs_skill.meta.schema_version.max(2),
         skill_id: new_id,
         path_key: path_key(&target_path),
         path: target_path,
         enabled: theirs_skill.meta.enabled,
+        devices: theirs_skill.meta.devices.clone(),
         tags: theirs_skill.meta.tags.clone(),
         source: theirs_skill.meta.source.clone(),
     };

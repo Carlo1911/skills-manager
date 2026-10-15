@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 8;
+const LATEST_VERSION: u32 = 9;
 
 /// Run all pending migrations on the database.
 ///
@@ -55,6 +55,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         5 => migrate_v5_to_v6(conn),
         6 => migrate_v6_to_v7(conn),
         7 => migrate_v7_to_v8(conn),
+        8 => migrate_v8_to_v9(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -321,6 +322,26 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v8 → v9: per-device skill enabled table (opción C). Each device records
+/// its own enabled override; the union of rows is the full picture and the
+/// metadata `devices{}` map mirrors it into the backup.
+fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS skill_device_state (
+            skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            device_slug TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            explicit INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(skill_id, device_slug)
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_device_state_device ON skill_device_state(device_slug);
+        ",
+    )?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -566,6 +587,68 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+    #[test]
+    fn v8_database_gains_skill_device_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        // Arrive at v8 the way a real upgrading database does.
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        run_migrations(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        conn.execute(
+            "DROP TABLE IF EXISTS skill_device_state",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("DROP INDEX IF EXISTS idx_skill_device_state_device;")
+            .unwrap();
+
+        run_migrations(&conn).unwrap();
+        // The probe row below needs a parent skill (FK).
+        conn.execute(
+            "INSERT OR IGNORE INTO skills (id, name, source_type, central_path) VALUES ('skill-1', 'S', 'import', '/tmp/s')",
+            [],
+        )
+        .unwrap();
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_VERSION);
+        // Table exists with the (skill_id, device_slug) primary key.
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'skill_device_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("PRIMARY KEY(skill_id, device_slug)"), "unexpected DDL: {sql}");
+        assert!(sql.contains("REFERENCES skills(id) ON DELETE CASCADE"), "unexpected DDL: {sql}");
+        // Device index exists.
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_skill_device_state_device'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        // Round-trip a row through the 0/1 encoding.
+        conn.execute(
+            "INSERT INTO skill_device_state (skill_id, device_slug, enabled, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["skill-1", "my-laptop", 0, 1],
+        )
+        .unwrap();
+        let enabled: i64 = conn
+            .query_row(
+                "SELECT enabled FROM skill_device_state WHERE skill_id = 'skill-1' AND device_slug = 'my-laptop'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, 0);
     }
 
     #[test]

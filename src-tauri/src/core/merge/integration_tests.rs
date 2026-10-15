@@ -118,11 +118,12 @@ impl Device {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), content).unwrap();
         let meta = SkillMetaFile {
-            schema_version: 1,
+            schema_version: 2,
             skill_id: id.to_string(),
             path: path.to_string(),
             path_key: sync_metadata::path_key(path),
             enabled,
+            devices: Default::default(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             source: SourceMeta {
                 source_type: "import".to_string(),
@@ -140,7 +141,7 @@ impl Device {
         .unwrap();
         std::fs::write(
             self.skills.join(".skills-manager/schema.json"),
-            b"{\n  \"schema_version\": 1,\n  \"app_min_version\": \"2.0.0\",\n  \"created_by\": \"skills-manager\"\n}\n",
+            b"{\n  \"schema_version\": 2,\n  \"app_min_version\": \"2.0.0\",\n  \"created_by\": \"skills-manager\"\n}\n",
         )
         .unwrap();
     }

@@ -579,11 +579,12 @@ mod tests {
             let meta_dir = dir.join(".skills-manager/skills");
             std::fs::create_dir_all(&meta_dir).unwrap();
             let meta = crate::core::sync_metadata::SkillMetaFile {
-                schema_version: 1,
+                schema_version: 2,
                 skill_id: "skill-1".to_string(),
                 path: "alpha".to_string(),
                 path_key: "alpha".to_string(),
                 enabled: true,
+                devices: Default::default(),
                 tags: vec![],
                 source: crate::core::sync_metadata::SourceMeta {
                     source_type: "import".to_string(),
@@ -599,7 +600,7 @@ mod tests {
             .unwrap();
             std::fs::write(
                 dir.join(".skills-manager/schema.json"),
-                b"{\n  \"schema_version\": 1,\n  \"app_min_version\": \"2.0.0\",\n  \"created_by\": \"skills-manager\"\n}\n",
+                b"{\n  \"schema_version\": 2,\n  \"app_min_version\": \"2.0.0\",\n  \"created_by\": \"skills-manager\"\n}\n",
             )
             .unwrap();
         };

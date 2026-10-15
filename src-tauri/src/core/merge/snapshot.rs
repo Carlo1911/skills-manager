@@ -35,12 +35,18 @@ pub struct SkillObj {
 }
 
 /// Component-level equality (§2): `content` / `path` / `attrs` are compared
-/// independently.
+/// independently. `attrs` is tags + source only: per-device `enabled` lives
+/// in the `devices{}` map and merges by key-union (see `merge_devices`),
+/// never as part of the one-component attrs decision.
 pub fn attrs_eq(a: &SkillMetaFile, b: &SkillMetaFile) -> bool {
-    a.enabled == b.enabled && a.tags == b.tags && a.source == b.source
+    a.tags == b.tags && a.source == b.source
 }
 
 pub fn skill_identical(a: &SkillObj, b: &SkillObj) -> bool {
+    // Device-blind on purpose: per-device `enabled`/`devices{}` merge by
+    // key-union in `merge_components`, never as object identity. Otherwise a
+    // locally materialized `devices{my-slug}` entry would make every skill
+    // look edited and break clean remote deletions (§10 convergence).
     a.content == b.content && a.meta.path == b.meta.path && attrs_eq(&a.meta, &b.meta)
 }
 
