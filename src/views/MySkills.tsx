@@ -380,7 +380,7 @@ export function MySkills() {
         if (!matchUntagged && !matchTag) return false;
       }
 
-      return matchesSkillLibraryFilter(skill, filterMode, viewedPreset?.id ?? null);
+      return matchesSkillLibraryFilter(skill, filterMode);
     });
 
     // Always sort enabled skills first; within enabled group, use custom sort order

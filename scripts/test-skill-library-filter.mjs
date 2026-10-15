@@ -9,7 +9,7 @@ const { outputText } = transpileModule(source, {
 const { matchesSkillLibraryFilter, canRefresh } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
-const base = { source_type: "git", source_ref: null, update_status: "update_available", preset_ids: ["active"] };
+const base = { source_type: "git", source_ref: null, update_status: "update_available", preset_ids: ["active"], enabled: true };
 
 for (const source_type of ["git", "skillssh", "local", "import"]) {
   const skill = { ...base, source_type, source_ref: "/source" };
@@ -26,12 +26,18 @@ for (const source_type of ["local", "import", "unsupported"]) {
   assert.equal(matchesSkillLibraryFilter(skill, "updateable", "active"), false);
 }
 assert.equal(matchesSkillLibraryFilter(base, "all", "active"), true);
+// Per-device: filters measure this device's switch, not preset membership.
 assert.equal(matchesSkillLibraryFilter(base, "enabled", "active"), true);
-assert.equal(matchesSkillLibraryFilter(base, "enabled", "other"), false);
-assert.equal(matchesSkillLibraryFilter(base, "available", "active"), false);
-assert.equal(matchesSkillLibraryFilter(base, "available", "other"), true);
+assert.equal(matchesSkillLibraryFilter(base, "enabled", "other"), true);
 assert.equal(matchesSkillLibraryFilter(base, "enabled", null), true);
-assert.equal(matchesSkillLibraryFilter(base, "available", null), true);
+assert.equal(matchesSkillLibraryFilter(base, "available", "active"), false);
+assert.equal(matchesSkillLibraryFilter(base, "available", "other"), false);
+assert.equal(matchesSkillLibraryFilter(base, "available", null), false);
+const offDevice = { ...base, enabled: false };
+assert.equal(matchesSkillLibraryFilter(offDevice, "all", "active"), true);
+assert.equal(matchesSkillLibraryFilter(offDevice, "enabled", "active"), false);
+assert.equal(matchesSkillLibraryFilter(offDevice, "available", "active"), true);
+assert.equal(matchesSkillLibraryFilter(offDevice, "available", null), true);
 
 for (const locale of ["en", "es", "zh", "zh-TW"]) {
   const translations = JSON.parse(readFileSync(new URL(`../src/i18n/${locale}.json`, import.meta.url), "utf8"));
