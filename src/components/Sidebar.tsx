@@ -284,7 +284,7 @@ export function Sidebar() {
                   )}
                 >
                   <span className={cn(
-                    "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
+                    "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-[4px] border",
                     isActive
                       ? "border-accent/30 bg-accent/10 text-accent"
                       : "border-border bg-surface text-muted"
@@ -332,7 +332,7 @@ export function Sidebar() {
                                     iconOverride={tool.icon}
                                     displayName={tool.display_name}
                                     className={cn(
-                                      "h-[20px] w-[20px] rounded border transition-colors",
+                                      "h-[20px] w-[20px] rounded-[4px] border transition-colors",
                                       isActive ? "border-accent/30 bg-accent/10" : "group-hover:border-border"
                                     )}
                                   />
@@ -354,7 +354,7 @@ export function Sidebar() {
                                 )}>
                                   <div
                                     {...provided.dragHandleProps}
-                                    className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
+                                    className="rounded-md p-1 text-faint cursor-grab active:cursor-grabbing"
                                   >
                                     <GripVertical className="h-3 w-3" />
                                   </div>
@@ -471,7 +471,7 @@ export function Sidebar() {
                                 >
                                   <span
                                     className={cn(
-                                      "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
+                                      "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-[4px] border",
                                       isActive
                                         ? `${presetIcon.activeClass} ${presetIcon.colorClass}`
                                         : "border-border bg-surface text-muted group-hover:border-border group-hover:text-tertiary"
@@ -501,20 +501,20 @@ export function Sidebar() {
                                 )}>
                                   <div
                                     {...provided.dragHandleProps}
-                                    className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
+                                    className="rounded-md p-1 text-faint cursor-grab active:cursor-grabbing"
                                   >
                                     <GripVertical className="h-3 w-3" />
                                   </div>
                                   <button
                                     onClick={(event) => handleRenameClick(event, preset)}
-                                    className="rounded p-1 text-faint transition hover:text-secondary"
+                                    className="rounded-md p-1 text-faint transition hover:text-secondary"
                                     title={t("common.edit")}
                                   >
                                     <Pencil className="h-3 w-3" />
                                   </button>
                                   <button
                                     onClick={(event) => handleDeleteClick(event, preset)}
-                                    className="rounded p-1 text-faint transition hover:text-red-600 dark:hover:text-red-400"
+                                    className="rounded-md p-1 text-faint transition hover:text-red-600 dark:hover:text-red-400"
                                     title={t("common.delete")}
                                   >
                                     <Trash2 className="h-3 w-3" />
@@ -628,7 +628,7 @@ export function Sidebar() {
                                 >
                                   <span
                                     className={cn(
-                                      "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
+                                      "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-[4px] border",
                                       isActive
                                         ? project.workspace_type === "linked"
                                           ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
@@ -668,7 +668,7 @@ export function Sidebar() {
                                 )}>
                                   <div
                                     {...provided.dragHandleProps}
-                                    className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
+                                    className="rounded-md p-1 text-faint cursor-grab active:cursor-grabbing"
                                   >
                                     <GripVertical className="h-3 w-3" />
                                   </div>
@@ -678,7 +678,7 @@ export function Sidebar() {
                                       e.stopPropagation();
                                       setDeleteProjectTarget(project);
                                     }}
-                                    className="rounded p-1 text-faint transition hover:text-red-600 dark:hover:text-red-400"
+                                    className="rounded-md p-1 text-faint transition hover:text-red-600 dark:hover:text-red-400"
                                     title={t("common.delete")}
                                   >
                                     <Trash2 className="h-3 w-3" />
