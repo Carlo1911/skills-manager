@@ -552,6 +552,22 @@
     "gitAlreadyInstalled": "\"{{name}}\" 已安装，重新安装将会更新。",
     "onlyThisContributor": "仅看该贡献者",
     "installClone": "克隆并预览",
+    "gitRepos": {
+      "title": "已安装的 Git 仓库",
+      "description": "为技能库提供 Skills 的仓库，包括从 skills.sh 安装的。展开仓库可查看 Skills 及其本地位置。",
+      "empty": "没有已安装的 Git 仓库。",
+      "skillCount": "{{count}} 个已安装的 Skills",
+      "remove": "删除仓库",
+      "viewSkills": "查看 Skills 和位置",
+      "confirmTitle": "删除仓库？",
+      "confirmDescription": "将这些 {{count}} 个 Skills 从中央库、Preset 和各 Agent 的已部署配置中永久删除。撤销需要重新安装。",
+      "confirmRemove": "删除 {{count}} 个 Skills",
+      "removeCache": "同时删除本机缓存的 Git 仓库",
+      "safeScope": "仅删除 Skills Manager 的仓库缓存。Projects 或其他文件夹中的独立克隆不受影响。锁定文件会保留，以保证并发安全。",
+      "removed": "已删除 {{count}} 个 Skills；删除了 {{caches}} 个缓存仓库。",
+      "removePartial": "已删除 {{deleted}} 个 Skills；{{failed}} 个删除失败。仓库缓存已保留。",
+      "cacheFailed": "Skills 已删除，但仓库缓存清理失败：{{message}}"
+    },
     "gitPreview": {
       "title": "选择要导入的技能",
       "description": "从仓库中发现了以下技能，可自定义名称后导入。",

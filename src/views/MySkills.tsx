@@ -1313,7 +1313,7 @@ export function MySkills() {
                     >
                       <span
                         className={cn(
-                          "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border",
+                          "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-md border",
                           active ? "border-accent bg-accent text-white" : "border-border text-transparent"
                         )}
                       >

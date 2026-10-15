@@ -47,7 +47,7 @@ export function SkillUpdateProgressPanel() {
                   {!run.finished && <Loader2 aria-hidden="true" className="h-4 w-4 shrink-0 animate-spin" />}
                   {t(run.finished ? "skillUpdateProgress.finished" : "skillUpdateProgress.title")}
                 </p>
-                <p className="mt-1 text-xs text-muted">
+                <p className="mt-1 text-[12px] text-muted">
                   {t("skillUpdateProgress.count", { completed, total: run.items.length })}
                 </p>
               </div>
@@ -56,7 +56,7 @@ export function SkillUpdateProgressPanel() {
                   type="button"
                   aria-label={t("skillUpdateProgress.dismiss")}
                   onClick={() => setRuns((current) => current.filter((item) => item.run_id !== run.run_id))}
-                  className="rounded p-1 text-muted hover:bg-surface-hover hover:text-primary"
+                  className="rounded-md p-1 text-muted hover:bg-surface-hover hover:text-primary"
                 >
                   <X aria-hidden="true" className="h-4 w-4" />
                 </button>
@@ -80,15 +80,15 @@ export function SkillUpdateProgressPanel() {
                   : item.status === "pending" ? Circle
                   : warning ? AlertTriangle : CheckCircle2;
                 return (
-                  <li key={item.id} className="flex items-start gap-2 text-xs">
+                  <li key={item.id} className="flex items-start gap-2 text-[12px]">
                     <Icon aria-hidden="true" className={cn(
                       "mt-0.5 h-3.5 w-3.5 shrink-0",
-                      (item.status === "updating" || item.status === "checking") && "animate-spin text-blue-400",
-                      warning ? "text-amber-400" : "text-muted",
+                      (item.status === "updating" || item.status === "checking") && "animate-spin text-blue-600 dark:text-blue-400",
+                      warning ? "text-amber-600 dark:text-amber-400" : "text-muted",
                     )} />
                     <div className="min-w-0 flex-1">
                       <p className="break-words font-medium text-primary">{item.name}</p>
-                      <p className={cn("mt-0.5 text-muted", warning && "text-amber-400")}>
+                      <p className={cn("mt-0.5 text-muted", warning && "text-amber-600 dark:text-amber-400")}>
                         {t(`skillUpdateProgress.status.${item.status}`)}
                       </p>
                       {item.error && <p className="mt-1 break-words text-muted">{item.error}</p>}

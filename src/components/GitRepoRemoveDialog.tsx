@@ -27,7 +27,7 @@ export function GitRepoRemoveDialog({ repo, removeCache, onRemoveCacheChange, bu
       className="m-auto w-full max-w-lg rounded-xl border border-border bg-surface p-5 text-secondary shadow-2xl backdrop:bg-black/70 max-h-[calc(85vh/var(--app-scale))] overflow-y-auto">
       {repo && <>
         <h2 id="remove-git-repo-title" className="flex items-center gap-2 text-[14px] font-semibold">
-          <AlertTriangle className="h-4 w-4 text-amber-400" />{t("install.gitRepos.confirmTitle")}
+          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />{t("install.gitRepos.confirmTitle")}
         </h2>
         <p className="mt-3 break-all font-mono text-[13px]">{repo.key}</p>
         <p className="mt-3 text-[13px] text-muted">{t("install.gitRepos.confirmDescription", { count: repo.skills.length })}</p>

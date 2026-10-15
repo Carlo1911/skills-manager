@@ -1054,8 +1054,7 @@
     "updateSelected": "Añadir {{count}}",
     "workspaceAdded": "Espacio de trabajo añadido",
     "workspaceHint": "Gestiona los skills de agentes locales en este repositorio y sincronízalos con el Centro de Skills.",
-    "importFromCenter": "Añadir skill",
-    "openInFinder": "Abrir directorio"
+    "importFromCenter": "Añadir skill"
   },
   "presetActions": {
     "button": "Aplicar preset",
