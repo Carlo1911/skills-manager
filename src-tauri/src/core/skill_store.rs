@@ -356,6 +356,25 @@ impl SkillStore {
         }
     }
 
+    /// This device's EXPLICIT decision (explicit=1), if recorded. Derived
+    pub fn get_explicit_device_state(
+        &self,
+        skill_id: &str,
+        device_slug: &str,
+    ) -> Result<Option<bool>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT enabled FROM skill_device_state WHERE skill_id = ?1 AND device_slug = ?2 AND explicit = 1",
+        )?;
+        let mut rows = stmt.query_map(params![skill_id, device_slug], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v != 0)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
     /// Record (or overwrite) one device's enabled flag for a skill.
     /// `explicit` marks a real user decision (toggle UI, restore-select):
     /// only explicit rows are published into metadata `devices{}`. Reindex

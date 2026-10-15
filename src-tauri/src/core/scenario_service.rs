@@ -743,15 +743,27 @@ pub fn ensure_cli_scenario_state(store: &SkillStore) -> Result<(), AppError> {
         .map_err(AppError::db)
 }
 
+/// Legacy startup repair: pre-per-device databases could end up with
+/// `skills.enabled=false` rows that only meant corruption. With per-device
+/// state, `false` is a legitimate local effective flag, so only rows with
+/// NO device state at all are repaired; rows with any `skill_device_state`
+/// entry keep their effective value (recomputed from the override).
 pub fn restore_all_skills_sync_included(store: &SkillStore) -> Result<bool, AppError> {
     let mut changed = false;
     for skill in store.get_all_skills().map_err(AppError::db)? {
-        if !skill.enabled {
-            store
-                .update_skill_enabled(&skill.id, true)
-                .map_err(AppError::db)?;
-            changed = true;
+        if skill.enabled {
+            continue;
         }
+        let states = store
+            .device_states_for_skill(&skill.id)
+            .map_err(AppError::db)?;
+        if !states.is_empty() {
+            continue;
+        }
+        store
+            .update_skill_enabled(&skill.id, true)
+            .map_err(AppError::db)?;
+        changed = true;
     }
     Ok(changed)
 }

@@ -237,7 +237,20 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
             _ => now,
         };
 
-        let effective = effective_enabled_for(&meta, &my_slug, previous.map(|s| s.enabled));
+        // Explicit local decision wins over the stored row: a startup repair
+        // or an older client may have rewritten `skills.enabled`, but the
+        // user's own toggle (explicit=1) is authoritative for this device.
+        // The published map still wins when it carries our slug — it is the
+        // same decision echoed back after a sync.
+        let my_explicit = store
+            .get_explicit_device_state(&meta.skill_id, &my_slug)
+            .ok()
+            .flatten();
+        let effective = match (meta.devices.get(&my_slug).copied(), my_explicit) {
+            (Some(published), _) => published,
+            (None, Some(local)) => local,
+            (None, None) => effective_enabled_for(&meta, &my_slug, previous.map(|s| s.enabled)),
+        };
         let record = SkillRecord {
             id: meta.skill_id.clone(),
             name,
