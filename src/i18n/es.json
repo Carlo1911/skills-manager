@@ -295,6 +295,7 @@
     "batchUpdated": "{{count}} skills actualizados",
     "cancelSelect": "Cancelar selección",
     "clearFilters": "Borrar filtros",
+    "filterCount": "{{filtered}} de {{total}}",
     "collapseAgentToggles": "Contraer",
     "compactEnabledCount": "{{count}} habilitados",
     "confirmSyncMessage": "Sincronizar \"{{name}}\" con estos {{count}} agentes.",

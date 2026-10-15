@@ -1316,9 +1316,12 @@ export function MySkills() {
               </button>
             ))}
           </div>
-
+          {hasActiveFilters && filtered.length > 0 && (
+            <span className="shrink-0 text-[12px] tabular-nums text-muted" aria-live="polite">
+              {t("mySkills.filterCount", { filtered: filtered.length, total: skills.length })}
+            </span>
+          )}
         </div>
-
         {/* Keep all library actions in one toolbar so they wrap together. */}
         <div className="flex items-center gap-3">
           <div className="app-segmented app-toolbar-segmented shrink-0">

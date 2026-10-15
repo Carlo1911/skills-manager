@@ -303,6 +303,7 @@
     "addFirst": "点击“安装 Skills”开始添加到中央仓库",
     "noMatch": "没有符合当前搜索或筛选条件的 Skills",
     "clearFilters": "清除筛选",
+    "filterCount": "{{filtered}} / {{total}}",
     "noPreset": "当前还没有可用 Preset",
     "currentPresetFallback": "当前 Preset",
     "presetCount": "{{count}} 个 Preset",
