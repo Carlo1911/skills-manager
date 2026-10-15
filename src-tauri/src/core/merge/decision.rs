@@ -270,7 +270,7 @@ fn merge_components(b: &SkillObj, o: &SkillObj, t: &SkillObj) -> ComponentOutcom
 
     let content = pick(&b.content, &o.content, &t.content);
     let path = pick(&b.meta.path, &o.meta.path, &t.meta.path);
-    // attrs are one component: enabled + tags + source move together.
+    // attrs are one component: tags + source move together.
     let attrs_changed_o = !attrs_eq(&b.meta, &o.meta);
     let attrs_changed_t = !attrs_eq(&b.meta, &t.meta);
     let attrs: Option<(&SkillMetaFile, bool)> = match (attrs_changed_o, attrs_changed_t) {
@@ -284,17 +284,32 @@ fn merge_components(b: &SkillObj, o: &SkillObj, t: &SkillObj) -> ComponentOutcom
             }
         }
     };
+    // devices{} merges by key-union outside the attrs component: each device
+    // only writes its own slug, so disjoint keys never conflict. No timestamp
+    // exists in the JSON, so the same key touched on both sides with
+    // different values is undecidable → whole-skill conflict, keep ours.
+    let devices = match merge_devices(&b.meta, &o.meta, &t.meta) {
+        DevicesOutcome::Merged(map) => Some(map),
+        DevicesOutcome::Conflict => None,
+    };
 
-    match (content, path, attrs) {
-        (Some((content, c_t)), Some((path, p_t)), Some((attrs_src, a_t))) => {
+    match (content, path, attrs, devices) {
+        (Some((content, c_t)), Some((path, p_t)), Some((attrs_src, a_t)), Some(devices)) => {
             // Canonical rebuild (§2.1): attrs winner's values verbatim, the
             // winning path, path_key recomputed by the shared helper.
+            // `enabled` is the frozen published flag: it only ever changes
+            // when the attrs winner changes it (legacy writers); per-device
+            // state travels in `devices`. schema_version is the attrs
+            // winner's verbatim — NOT bumped here, so merges of identical
+            // inputs converge to identical trees (§10). Writers stamp the
+            // current version on their own commits via SCHEMA_VERSION.
             let meta = SkillMetaFile {
                 schema_version: attrs_src.schema_version,
                 skill_id: o.meta.skill_id.clone(),
                 path: path.clone(),
                 path_key: path_key(path),
                 enabled: attrs_src.enabled,
+                devices,
                 tags: attrs_src.tags.clone(),
                 source: attrs_src.source.clone(),
             };
@@ -311,6 +326,62 @@ fn merge_components(b: &SkillObj, o: &SkillObj, t: &SkillObj) -> ComponentOutcom
         }
         _ => ComponentOutcome::Conflict,
     }
+}
+
+enum DevicesOutcome {
+    Merged(BTreeMap<String, bool>),
+    Conflict,
+}
+
+/// Union of per-device keys across base/ours/theirs. A key both sides
+/// changed to different values conflicts; anything else (one-sided change,
+/// identical change, disjoint additions, deletions-vs-unchanged) merges.
+fn merge_devices(
+    b: &SkillMetaFile,
+    o: &SkillMetaFile,
+    t: &SkillMetaFile,
+) -> DevicesOutcome {
+    let keys: BTreeSet<&String> = b
+        .devices
+        .keys()
+        .chain(o.devices.keys())
+        .chain(t.devices.keys())
+        .collect();
+    let mut out = BTreeMap::new();
+    for key in keys {
+        let bv = b.devices.get(key);
+        let ov = o.devices.get(key);
+        let tv = t.devices.get(key);
+        let o_changed = ov != bv;
+        let t_changed = tv != bv;
+        match (o_changed, t_changed) {
+            (false, false) => {
+                if let Some(v) = ov.or(bv) {
+                    out.insert((*key).clone(), *v);
+                }
+            }
+            (true, false) => {
+                if let Some(v) = ov {
+                    out.insert((*key).clone(), *v);
+                }
+            }
+            (false, true) => {
+                if let Some(v) = tv {
+                    out.insert((*key).clone(), *v);
+                }
+            }
+            (true, true) => {
+                if ov == tv {
+                    if let Some(v) = ov {
+                        out.insert((*key).clone(), *v);
+                    }
+                } else {
+                    return DevicesOutcome::Conflict;
+                }
+            }
+        }
+    }
+    DevicesOutcome::Merged(out)
 }
 
 /// Whole-file object merge: three-way per key; both-changed-unequal (and
@@ -496,14 +567,26 @@ mod tests {
     }
 
     fn skill(id: &str, path: &str, content: u8, enabled: bool, tags: &[&str]) -> SkillObj {
+        skill_with_devices(id, path, content, enabled, tags, BTreeMap::new())
+    }
+
+    fn skill_with_devices(
+        id: &str,
+        path: &str,
+        content: u8,
+        enabled: bool,
+        tags: &[&str],
+        devices: BTreeMap<String, bool>,
+    ) -> SkillObj {
         SkillObj {
             meta_entry: FileEntry { oid: oid(0), mode: 0o100644 },
             meta: SkillMetaFile {
-                schema_version: 1,
+                schema_version: 2,
                 skill_id: id.to_string(),
                 path: path.to_string(),
                 path_key: path_key(path),
                 enabled,
+                devices,
                 tags: tags.iter().map(|s| s.to_string()).collect(),
                 source: SourceMeta {
                     source_type: "import".to_string(),
@@ -514,6 +597,13 @@ mod tests {
             },
             content: Some(oid(content)),
         }
+    }
+
+    fn devices(pairs: &[(&str, bool)]) -> BTreeMap<String, bool> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect()
     }
 
     fn snap(skills: Vec<SkillObj>) -> Snapshot {
@@ -617,13 +707,103 @@ mod tests {
     #[test]
     fn attrs_move_as_one_component() {
         let base = snap(vec![skill("s", "p", 1, true, &["a"])]);
-        // ours toggles enabled; theirs edits tags → same component both
+        // ours edits tags; theirs edits source → same component both
         // changed, unequal → whole-skill conflict, ours kept.
-        let ours = snap(vec![skill("s", "p", 1, false, &["a"])]);
+        let mut ours_meta = skill("s", "p", 1, true, &["a", "b"]);
+        let mut theirs_meta = skill("s", "p", 1, true, &["a"]);
+        theirs_meta.meta.source = SourceMeta {
+            source_type: "git".to_string(),
+            ref_: Some("https://example.com/repo".to_string()),
+            subpath: None,
+            branch: None,
+        };
+        let ours = snap(vec![ours_meta]);
+        let theirs = snap(vec![theirs_meta]);
+        let plan = decide_simple(&base, &ours, &theirs);
+        assert_eq!(plan.skills["s"].meta.tags, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(plan.new_conflicts.len(), 1);
+    }
+
+    #[test]
+    fn enabled_flag_alone_does_not_conflict_attrs() {
+        // The legacy global flag is frozen, not merged: flipping it on one
+        // side must not conflict a tags edit on the other.
+        let base = snap(vec![skill("s", "p", 1, true, &["a"])]);
+        let ours = snap(vec![skill("s", "p", 1, false, &["a", "b"])]);
         let theirs = snap(vec![skill("s", "p", 1, true, &["a", "b"])]);
         let plan = decide_simple(&base, &ours, &theirs);
-        assert!(!plan.skills["s"].meta.enabled);
+        assert!(plan.new_conflicts.is_empty());
+        assert_eq!(plan.skills["s"].meta.tags, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn devices_union_disjoint_keys() {
+        let base = snap(vec![skill_with_devices(
+            "s",
+            "p",
+            1,
+            true,
+            &[],
+            devices(&[]),
+        )]);
+        let ours = snap(vec![skill_with_devices(
+            "s",
+            "p",
+            1,
+            true,
+            &[],
+            devices(&[("laptop", false)]),
+        )]);
+        let theirs = snap(vec![skill_with_devices(
+            "s",
+            "p",
+            1,
+            true,
+            &[],
+            devices(&[("desktop", true)]),
+        )]);
+        let plan = decide_simple(&base, &ours, &theirs);
+        assert!(plan.new_conflicts.is_empty());
+        assert_eq!(
+            plan.skills["s"].meta.devices,
+            devices(&[("desktop", true), ("laptop", false)])
+        );
+    }
+
+    #[test]
+    fn devices_same_key_conflict() {
+        let base = snap(vec![skill_with_devices(
+            "s",
+            "p",
+            1,
+            true,
+            &[],
+            devices(&[]),
+        )]);
+        // Both sides write the SAME key with different values: undecidable
+        // without timestamps → whole-skill conflict, ours kept.
+        let ours = snap(vec![skill_with_devices(
+            "s",
+            "p",
+            1,
+            true,
+            &[],
+            devices(&[("laptop", false)]),
+        )]);
+        let theirs = snap(vec![skill_with_devices(
+            "s",
+            "p",
+            1,
+            true,
+            &[],
+            devices(&[("laptop", true)]),
+        )]);
+        let plan = decide_simple(&base, &ours, &theirs);
         assert_eq!(plan.new_conflicts.len(), 1);
+        assert_eq!(
+            plan.skills["s"].meta.devices,
+            devices(&[("laptop", false)])
+        );
     }
 
     #[test]

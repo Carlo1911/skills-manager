@@ -6,6 +6,7 @@ import { useApp } from "../context/AppContext";
 import { mapGitErrorMessage } from "../lib/gitErrors";
 import { useSetAsideOffer } from "../hooks/useSetAsideOffer";
 import * as api from "../lib/tauri";
+import { useRestoreSelect } from "../hooks/useRestoreSelect";
 
 const PROMPT_SETTING_KEY = "backup_first_run_prompt";
 
@@ -24,6 +25,7 @@ export function FirstRunRestoreDialog() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { attempt, announceLocalCopies, dialog: setAsideDialog } = useSetAsideOffer();
+  const { promptRestoreSelect, restoreSelectDialog } = useRestoreSelect();
 
   useEffect(() => {
     if (skillsLoading || checked) return;
@@ -40,7 +42,7 @@ export function FirstRunRestoreDialog() {
     })();
   }, [skillsLoading, checked, managedSkills.length]);
 
-  if (!open) return null;
+  if (!open) return <>{restoreSelectDialog}</>;
 
   const dismiss = async () => {
     if (busy) return;
@@ -58,6 +60,7 @@ export function FirstRunRestoreDialog() {
       // to the OS keychain, only the clean URL is persisted (§3.7).
       const effective = await api.gitBackupSanitizeRemoteUrl(trimmed);
       await api.setSettings("git_backup_remote_url", effective);
+      let cloned = false;
       await attempt(async (setAside) => {
         announceLocalCopies(await api.gitBackupClone(effective, setAside));
         await api.setSettings(PROMPT_SETTING_KEY, "restored").catch(() => {});
@@ -66,7 +69,9 @@ export function FirstRunRestoreDialog() {
         await Promise.all([refreshManagedSkills(), refreshPresets()]);
         toast.success(t("firstRun.restoreSuccess"));
         setOpen(false);
+        cloned = true;
       });
+      if (cloned) await promptRestoreSelect();
     } catch (err) {
       setError(mapGitErrorMessage(err, t));
     } finally {
@@ -135,6 +140,7 @@ export function FirstRunRestoreDialog() {
         <p className="mt-3 text-[12px] leading-5 text-faint">{t("firstRun.hint")}</p>
       </div>
       {setAsideDialog}
+      {restoreSelectDialog}
     </div>
   );
 }

@@ -236,7 +236,14 @@
       "snapshots": "Snapshots"
     },
     "credentialsMigrated": "The access token found in your backup URL was moved to the system keychain. It no longer appears in any file.",
-    "restoreSafetyPoint": "Your previous state was saved as snapshot {{tag}} — you can restore it from the history at any time."
+    "restoreSafetyPoint": "Your previous state was saved as snapshot {{tag}} — you can restore it from the history at any time.",
+    "restoreSelect": {
+      "title": "Choose skills for this device",
+      "message": "The backup is in. Everything is on unless you uncheck it — unchecked skills stay hidden on this device only and keep syncing everywhere else.",
+      "selection": "{{enabled}} on · {{hidden}} hidden on this device",
+      "confirm": "Done",
+      "applied": "Hid {{count}} skills on this device"
+    }
   },
   "firstRun": {
     "title": "Start fresh, or restore from a backup?",
@@ -279,6 +286,18 @@
     "delete": "Delete skill",
     "deleteConfirm": "Delete skill \"{{name}}\" permanently? This removes its central library files, preset links, and synced agent targets.",
     "deleted": "deleted",
+    "deviceHidden": "Hidden on this device",
+    "deviceHiddenToast": "{{name}} hidden on this device",
+    "deviceShownToast": "{{name}} shown on this device",
+    "removeFromDevice": "Remove from this device",
+    "removeFromDeviceBatch": "Remove {{count}} from this device",
+    "removeFromDeviceToast": "{{count}} skills hidden on this device",
+    "deletePermanently": "Delete permanently…",
+    "deleteEverywhereConfirm": "Delete skill \"{{name}}\" everywhere? It is on {{count}} devices ({{devices}}) and this removes its central library files, preset links, and synced agent targets on all of them.",
+    "batchDeleteEverywhereConfirm": "Delete {{count}} selected skills everywhere? They are on {{devices}} and this removes central library files, preset links, and synced agent targets on all devices.",
+    "resetToGlobal": "Reset to shared setting ({{state}})",
+    "deviceOn": "on",
+    "deviceOff": "off",
     "viewDoc": "View docs",
     "noSkills": "No skills to display",
     "addFirst": "Click \"Install Skills\" to add skills into the central library",

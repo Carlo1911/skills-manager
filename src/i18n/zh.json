@@ -236,7 +236,14 @@
       "snapshots": "快照"
     },
     "credentialsMigrated": "检测到备份地址中包含访问令牌，已将其转移至系统钥匙串，不再出现在任何文件中。",
-    "restoreSafetyPoint": "恢复前的状态已保存为备份点 {{tag}}，可随时从历史中恢复。"
+    "restoreSafetyPoint": "恢复前的状态已保存为备份点 {{tag}}，可随时从历史中恢复。",
+    "restoreSelect": {
+      "title": "选择本设备的 Skills",
+      "message": "备份已恢复。默认全部显示，取消勾选的 Skill 仅在本设备隐藏，其他设备不受影响。",
+      "selection": "{{enabled}} 个显示 · 本设备隐藏 {{hidden}} 个",
+      "confirm": "完成",
+      "applied": "已在本设备隐藏 {{count}} 个 Skill"
+    }
   },
   "firstRun": {
     "title": "全新开始，还是从备份恢复？",
@@ -279,6 +286,18 @@
     "delete": "删除 Skill",
     "deleteConfirm": "确定彻底删除 Skill \"{{name}}\" 吗？中央仓库文件、Preset 关联和已同步到各 Agent 的目标都会被移除。",
     "deleted": "已删除",
+    "deviceHidden": "已在本设备隐藏",
+    "deviceHiddenToast": "{{name}} 已在本设备隐藏",
+    "deviceShownToast": "{{name}} 已在本设备显示",
+    "removeFromDevice": "从本设备移除",
+    "removeFromDeviceBatch": "从本设备移除 {{count}} 个",
+    "removeFromDeviceToast": "已在本设备隐藏 {{count}} 个 Skill",
+    "deletePermanently": "彻底删除…",
+    "deleteEverywhereConfirm": "确定在所有位置删除 Skill \"{{name}}\" 吗？它在 {{count}} 台设备上（{{devices}}），中央仓库文件、Preset 关联和已同步目标都会被移除。",
+    "batchDeleteEverywhereConfirm": "确定在所有位置删除选中的 {{count}} 个 Skill 吗？它们分布在 {{devices}}，中央仓库文件、Preset 关联和已同步目标都会被移除。",
+    "resetToGlobal": "恢复为共享设置（{{state}}）",
+    "deviceOn": "开",
+    "deviceOff": "关",
     "viewDoc": "查看文档",
     "noSkills": "没有可显示的 Skills",
     "addFirst": "点击“安装 Skills”开始添加到中央仓库",

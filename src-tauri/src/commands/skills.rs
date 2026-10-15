@@ -747,18 +747,6 @@ pub async fn delete_managed_skills(
         .await?
 }
 
-#[tauri::command]
-pub async fn purge_git_repo_cache(
-    repo_urls: Vec<String>,
-) -> Result<PurgeGitRepoCacheResult, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        git_fetcher::purge_repo_cache_for_urls(&repo_urls)
-            .map(|removed| PurgeGitRepoCacheResult { removed })
-            .map_err(AppError::io)
-    })
-    .await?
-}
-
 pub fn delete_managed_skills_by_ids(
     store: &SkillStore,
     skill_ids: &[String],
@@ -816,6 +804,174 @@ pub fn delete_managed_skills_by_ids(
     })
     .map_err(AppError::db)
 }
+
+
+#[tauri::command]
+pub async fn purge_git_repo_cache(
+    repo_urls: Vec<String>,
+) -> Result<PurgeGitRepoCacheResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_fetcher::purge_repo_cache_for_urls(&repo_urls)
+            .map(|removed| PurgeGitRepoCacheResult { removed })
+            .map_err(AppError::io)
+    })
+    .await?
+}
+
+/// One device's view of a skill's enabled flag (opción C).
+#[derive(Debug, Serialize)]
+pub struct DeviceSkillStateEntry {
+    pub slug: String,
+    pub enabled: bool,
+    pub is_mine: bool,
+}
+
+/// `device_skill_states`: every known device's flag plus the frozen global
+/// (published/legacy) flag and this device's slug for comparison.
+#[derive(Debug, Serialize)]
+pub struct DeviceSkillStatesResult {
+    pub states: Vec<DeviceSkillStateEntry>,
+    pub global_enabled: bool,
+    pub my_slug: String,
+}
+
+/// Set THIS device's enabled flag for a skill (opción C): record our slug's
+/// row, mirror the effective flag into `skills.enabled` for the local UI,
+/// and publish the union through the metadata file — all under one repo
+/// lock so no concurrent reindex can interleave.
+#[tauri::command]
+pub async fn set_skill_device_enabled(
+    skill_id: String,
+    enabled: bool,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<(), AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        sync_metadata::with_repo_lock("set skill device enabled", || {
+            if store.get_skill_by_id(&skill_id).map_err(AppError::db)?.is_none() {
+                anyhow::bail!("Skill not found");
+            }
+            let slug = crate::core::git_backup::device_slug(&store);
+            store.set_device_state_explicit(&skill_id, &slug, enabled, true)?;
+            store.update_skill_enabled(&skill_id, enabled)?;
+            sync_metadata::write_all_from_db_unlocked(&store)?;
+            Ok(())
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("Skill not found") {
+                AppError::not_found("Skill not found")
+            } else {
+                AppError::db(e)
+            }
+        })
+    })
+    .await?
+}
+
+/// Drop THIS device's override for a skill: the published/legacy global
+/// decides again. Returns the skill to its default visibility here.
+#[tauri::command]
+pub async fn reset_skill_device_override(
+    skill_id: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<(), AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        sync_metadata::with_repo_lock("reset skill device override", || {
+            let Some(skill) = store.get_skill_by_id(&skill_id)? else {
+                anyhow::bail!("Skill not found");
+            };
+            let slug = crate::core::git_backup::device_slug(&store);
+            // Published map from disk is the source of truth for other
+            // devices' entries; the DB mixes explicit rows with derived
+            // (reindex-materialized) ones, which must not be republished.
+            let published = read_published_devices(&skill_id).unwrap_or_default();
+            // Without our entry the effective flag is the published global.
+            // The on-disk metadata file is the published source of truth;
+            // fall back to the local row when it is missing (never synced).
+            let global = read_published_enabled(&skill_id).unwrap_or(skill.enabled);
+            let effective = published.get(&slug).copied().unwrap_or(global);
+            store.clear_device_state(&skill_id)?;
+            for (other_slug, other_enabled) in &published {
+                if other_slug != &slug {
+                    store.set_device_state_explicit(&skill_id, other_slug, *other_enabled, true)?;
+                }
+            }
+            store.update_skill_enabled(&skill_id, effective)?;
+            sync_metadata::write_all_from_db_unlocked(&store)?;
+            Ok(())
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("Skill not found") {
+                AppError::not_found("Skill not found")
+            } else {
+                AppError::db(e)
+            }
+        })
+    })
+    .await?
+}
+
+/// Every known device's enabled flag for a skill, marking this device's
+/// entry, plus the frozen global flag from the on-disk metadata file.
+#[tauri::command]
+pub async fn device_skill_states(
+    skill_id: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<DeviceSkillStatesResult, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        (|| -> Result<DeviceSkillStatesResult, AppError> {
+            let Some(skill) = store.get_skill_by_id(&skill_id).map_err(AppError::db)? else {
+                return Err(AppError::not_found("Skill not found"));
+            };
+            let slug = crate::core::git_backup::device_slug(&store);
+            let states = store
+                .device_states_for_skill(&skill_id)
+                .map_err(AppError::db)?
+                .into_iter()
+                .map(|(s, enabled)| DeviceSkillStateEntry {
+                    is_mine: s == slug,
+                    slug: s,
+                    enabled,
+                })
+                .collect();
+            let global_enabled = read_published_enabled(&skill_id).unwrap_or(skill.enabled);
+            Ok(DeviceSkillStatesResult {
+                states,
+                global_enabled,
+                my_slug: slug,
+            })
+        })()
+    })
+    .await?
+}
+
+/// The frozen published flag from the on-disk metadata file. `None` when
+/// the file is missing or unparsable (never synced, or a corrupt write).
+fn read_published_enabled(skill_id: &str) -> Option<bool> {
+    read_published_meta(skill_id).map(|meta| meta.enabled)
+}
+
+/// The published per-device map from disk. Other devices' entries are only
+/// authoritative here; the DB mixes them with derived local rows.
+fn read_published_devices(skill_id: &str) -> Option<std::collections::BTreeMap<String, bool>> {
+    read_published_meta(skill_id).map(|meta| meta.devices)
+}
+
+fn read_published_meta(skill_id: &str) -> Option<sync_metadata::SkillMetaFile> {
+    let raw = std::fs::read_to_string(
+        crate::core::central_repo::skills_dir()
+            .join(".skills-manager")
+            .join("skills")
+            .join(format!("{skill_id}.json")),
+    )
+    .ok()?;
+    serde_json::from_str::<sync_metadata::SkillMetaFile>(&raw).ok()
+}
+
 
 /// Append an audit log entry summarising an install attempt.
 /// `source_label` is short text identifying the source (e.g. "local", "git", "skillssh").

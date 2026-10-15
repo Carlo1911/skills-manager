@@ -5,6 +5,7 @@ import {
   List,
   CheckCircle2,
   ChevronDown,
+  EyeOff,
   FolderGit2,
   Github,
   HardDrive,
@@ -14,6 +15,7 @@ import {
   RotateCcw,
   GitBranch,
   ArrowUpCircle,
+  MonitorSmartphone,
   Wrench,
   Loader2,
   X,
@@ -186,7 +188,12 @@ export function MySkills() {
   const [gitRemoteConfig, setGitRemoteConfig] = useState("");
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [menuSkillId, setMenuSkillId] = useState<string | null>(null);
-  const [skillToDelete, setSkillToDelete] = useState<ManagedSkill | null>(null);
+  const [skillToDeleteEverywhere, setSkillToDeleteEverywhere] = useState<ManagedSkill | null>(null);
+  const [deviceStatesCache, setDeviceStatesCache] = useState<Record<string, api.DeviceSkillStates>>({});
+  const [togglingDeviceIds, setTogglingDeviceIds] = useState<Set<string>>(new Set());
+  const [hidingIds, setHidingIds] = useState<Set<string>>(new Set());
+  const [batchHideConfirm, setBatchHideConfirm] = useState(false);
+  const [batchDeviceSummary, setBatchDeviceSummary] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
 
@@ -210,6 +217,34 @@ export function MySkills() {
     api.gitBackupPendingConflicts()
       .then((rows) => setConflictIds(new Set(rows.map((row) => row.skill_id))))
       .catch(() => setConflictIds(new Set()));
+  }, [skills]);
+  // Override badges ("hidden here, on elsewhere") need the per-device states;
+  // prefetch them for the visible library and cache by skill. Best-effort:
+  // a failed fetch just hides the badge until the delete dialog fetches it.
+  useEffect(() => {
+    if (skills.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const settled = await Promise.all(
+        skills.map(async (skill) => {
+          try {
+            const states = await api.getDeviceSkillStates(skill.id);
+            return [skill.id, states] as const;
+          } catch {
+            return null;
+          }
+        })
+      );
+      if (cancelled) return;
+      const next: Record<string, api.DeviceSkillStates> = {};
+      for (const entry of settled) {
+        if (entry) next[entry[0]] = entry[1];
+      }
+      setDeviceStatesCache(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [skills]);
 
   const refreshAllTags = async () => {
@@ -387,7 +422,7 @@ export function MySkills() {
       filterMode,
       viewedPreset?.id ?? null,
     ]),
-    escapeEnabled: !batchTagDialogOpen && !batchSyncDialogOpen && !batchDeleteConfirm,
+    escapeEnabled: !batchTagDialogOpen && !batchSyncDialogOpen && !batchDeleteConfirm && !batchHideConfirm && skillToDeleteEverywhere === null,
   });
 
   const selectedSkill = useMemo(
@@ -578,6 +613,37 @@ export function MySkills() {
     };
   }, []);
 
+  /** Opcion C "Quitar de este equipo": per-device hide, never a global delete. */
+  const handleHideOnDevice = useCallback(
+    (skill: ManagedSkill) => {
+      setHidingIds((prev) => {
+        if (prev.has(skill.id)) return prev;
+        const next = new Set(prev);
+        next.add(skill.id);
+        return next;
+      });
+      void (async () => {
+        try {
+          await api.setSkillDeviceEnabled(skill.id, false);
+          if (selectedSkill?.id === skill.id) closeSkillDetail();
+          toast.success(t("mySkills.deviceHiddenToast", { name: skill.name }));
+        } catch (error: unknown) {
+          toast.error(getErrorMessage(error, t("common.error")));
+        } finally {
+          setHidingIds((prev) => {
+            if (!prev.has(skill.id)) return prev;
+            const next = new Set(prev);
+            next.delete(skill.id);
+            return next;
+          });
+          scheduleRefreshAfterDelete();
+        }
+      })();
+    },
+    [selectedSkill, closeSkillDetail, t, scheduleRefreshAfterDelete]
+  );
+
+  /** Definitive global delete, from the secondary "Eliminar definitivamente" item. */
   const handleDeleteSkill = useCallback(
     (skill: ManagedSkill) => {
       setDeletingIds((prev) => {
@@ -607,6 +673,36 @@ export function MySkills() {
     [selectedSkill, closeSkillDetail, t, scheduleRefreshAfterDelete]
   );
 
+  /** Batch mirror of "Quitar de este equipo": hide every selected skill here. */
+  const handleBatchHideOnDevice = async () => {
+    const ids = Array.from(selectedIds);
+    let hidden = 0;
+    let failed = 0;
+    try {
+      for (const id of ids) {
+        try {
+          await api.setSkillDeviceEnabled(id, false);
+          hidden++;
+        } catch {
+          failed++;
+        }
+      }
+      if (selectedSkill && ids.includes(selectedSkill.id)) closeSkillDetail();
+      if (hidden > 0) {
+        toast.success(t("mySkills.removeFromDeviceToast", { count: hidden }));
+      }
+      if (failed > 0) {
+        toast.error(t("mySkills.batchDeleteFailed", { count: failed }));
+      }
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    } finally {
+      exitMultiSelect();
+      setBatchHideConfirm(false);
+      await Promise.all([refreshManagedSkills(), refreshPresets()]);
+    }
+  };
+
   const handleBatchDelete = async () => {
     const ids = Array.from(selectedIds);
     try {
@@ -628,6 +724,56 @@ export function MySkills() {
       await Promise.all([refreshManagedSkills(), refreshPresets()]);
     }
   };
+
+  const fetchDeviceStates = useCallback(async (skillId: string) => {
+    try {
+      const states = await api.getDeviceSkillStates(skillId);
+      setDeviceStatesCache((prev) => ({ ...prev, [skillId]: states }));
+      return states;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /** Per-device toggle: flips this device's entry; `skills.enabled` already holds the effective value. */
+  const handleToggleDeviceSkill = useCallback(
+    async (skill: ManagedSkill) => {
+      if (togglingDeviceIds.has(skill.id)) return;
+      const next = !skill.enabled;
+      setTogglingDeviceIds((prev) => new Set(prev).add(skill.id));
+      try {
+        await api.setSkillDeviceEnabled(skill.id, next);
+        toast.success(
+          next
+            ? t("mySkills.deviceShownToast", { name: skill.name })
+            : t("mySkills.deviceHiddenToast", { name: skill.name })
+        );
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, t("common.error")));
+      } finally {
+        setTogglingDeviceIds((prev) => {
+          const copy = new Set(prev);
+          copy.delete(skill.id);
+          return copy;
+        });
+        await refreshManagedSkills();
+      }
+    },
+    [togglingDeviceIds, refreshManagedSkills, t]
+  );
+
+  const handleResetDeviceOverride = useCallback(
+    async (skillId: string) => {
+      try {
+        await api.resetSkillDeviceOverride(skillId);
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, t("common.error")));
+      } finally {
+        await Promise.all([refreshManagedSkills(), fetchDeviceStates(skillId)]);
+      }
+    },
+    [refreshManagedSkills, fetchDeviceStates, t]
+  );
 
   const handleBatchEditTags = async (adds: string[], removes: string[]) => {
     const selectedSkillsList = skills.filter((s) => selectedIds.has(s.id));
@@ -793,19 +939,6 @@ export function MySkills() {
       await refreshManagedSkills();
       setBatchUpdating(false);
     }
-  };
-
-  const handleTogglePreset = async (skill: ManagedSkill) => {
-    if (!viewedPreset) return;
-    const enabledInPreset = skill.preset_ids.includes(viewedPreset.id);
-    if (enabledInPreset) {
-      await api.removeSkillFromPreset(skill.id, viewedPreset.id);
-      toast.success(`${skill.name} ${t("mySkills.disabledInPreset")}`);
-    } else {
-      await api.addSkillToPreset(skill.id, viewedPreset.id);
-      toast.success(`${skill.name} ${t("mySkills.enabledInPreset")}`);
-    }
-    await Promise.all([refreshManagedSkills(), refreshPresets()]);
   };
 
   const handleCheckAllUpdates = async () => {
@@ -1429,11 +1562,39 @@ export function MySkills() {
                 }]
               : []),
             {
+              key: "hide-device",
+              label: t("mySkills.removeFromDeviceBatch", { count: selectedIds.size }),
+              icon: <EyeOff className="h-3.5 w-3.5" />,
+              onSelect: () => setBatchHideConfirm(true),
+            },
+            {
               key: "delete",
               tone: "danger" as const,
               label: t("mySkills.deleteSelected", { count: selectedIds.size }),
               icon: <Trash2 className="h-3.5 w-3.5" />,
-              onSelect: () => setBatchDeleteConfirm(true),
+              onSelect: () => {
+                setBatchDeleteConfirm(true);
+                setBatchDeviceSummary(null);
+                void (async () => {
+                  const names = new Set<string>();
+                  for (const id of Array.from(selectedIds)) {
+                    const cached = deviceStatesCache[id];
+                    if (cached) {
+                      for (const s of cached.states) names.add(s.slug);
+                    } else {
+                      try {
+                        const fresh = await api.getDeviceSkillStates(id);
+                        setDeviceStatesCache((prev) => ({ ...prev, [id]: fresh }));
+                        for (const s of fresh.states) names.add(s.slug);
+                      } catch {
+                        // Best-effort: the dialog still shows the count.
+                      }
+                    }
+                  }
+                  const list = [...names].sort();
+                  setBatchDeviceSummary(list.length > 0 ? list.join(", ") : null);
+                })();
+              },
             },
           ]}
           labels={{
@@ -1590,25 +1751,55 @@ export function MySkills() {
                                 }]
                               : []),
                             {
+                              key: "hide-device",
+                              label: t("mySkills.removeFromDevice"),
+                              icon: <EyeOff className="h-3.5 w-3.5" />,
+                              disabled: hidingIds.has(skill.id),
+                              onSelect: () => handleHideOnDevice(skill),
+                            },
+                            {
                               key: "delete",
-                              label: t("common.delete"),
+                              label: t("mySkills.deletePermanently"),
                               icon: <Trash2 className="h-3.5 w-3.5" />,
                               danger: true,
-                              onSelect: () => setSkillToDelete(skill),
+                              onSelect: () => {
+                                setSkillToDeleteEverywhere(skill);
+                                void fetchDeviceStates(skill.id);
+                              },
                             },
                           ]}
                         />
                         <ToggleSwitch
-                          checked={enabledInPreset}
-                          disabled={!viewedPreset}
-                          onChange={() => handleTogglePreset(skill)}
-                          title={enabledInPreset ? t("mySkills.enabledButton") : t("mySkills.enable")}
+                          checked={skill.enabled}
+                          loading={togglingDeviceIds.has(skill.id)}
+                          onChange={() => handleToggleDeviceSkill(skill)}
+                          title={skill.enabled ? t("mySkills.disable") : t("mySkills.enable")}
                         />
                       </>
                     )}
                   </div>
 
                   <div className="px-3.5 pb-3">
+                    {(() => {
+                      const cached = deviceStatesCache[skill.id];
+                      const mine = cached?.states.find((s) => s.isMine);
+                      const overridden = mine !== undefined && mine.enabled !== cached?.globalEnabled;
+                      if (!overridden) return null;
+                      return (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); void handleResetDeviceOverride(skill.id); }}
+                            className="inline-flex items-center gap-1 rounded-full bg-surface-active px-2 py-0.5 text-[12px] font-medium text-muted transition-colors hover:text-secondary"
+                            title={t("mySkills.resetToGlobal", {
+                              state: cached?.globalEnabled ? t("mySkills.deviceOn") : t("mySkills.deviceOff"),
+                            })}
+                          >
+                            <MonitorSmartphone className="h-3 w-3" />
+                            {t("mySkills.deviceHidden")}
+                          </button>
+                        </div>
+                      );
+                    })()}
                     <p className="text-[13px] leading-[18px] text-muted truncate">
                       {skill.description || "—"}
                     </p>
@@ -1814,6 +2005,23 @@ export function MySkills() {
                 <p className="min-w-0 flex-1 truncate text-[13px] text-muted">
                   {skill.description || "—"}
                 </p>
+                {(() => {
+                  const cached = deviceStatesCache[skill.id];
+                  const mine = cached?.states.find((s) => s.isMine);
+                  if (mine === undefined || mine.enabled === cached?.globalEnabled) return null;
+                  return (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void handleResetDeviceOverride(skill.id); }}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-active px-2 py-0.5 text-[12px] font-medium text-muted transition-colors hover:text-secondary"
+                      title={t("mySkills.resetToGlobal", {
+                        state: cached?.globalEnabled ? t("mySkills.deviceOn") : t("mySkills.deviceOff"),
+                      })}
+                    >
+                      <MonitorSmartphone className="h-3 w-3" />
+                      {t("mySkills.deviceHidden")}
+                    </button>
+                  );
+                })()}
 
                 <div className="flex shrink-0 items-center gap-1.5">
                   {skill.tags.map((tag) => (
@@ -1930,19 +2138,29 @@ export function MySkills() {
                             }]
                           : []),
                         {
+                          key: "hide-device",
+                          label: t("mySkills.removeFromDevice"),
+                          icon: <EyeOff className="h-3.5 w-3.5" />,
+                          disabled: hidingIds.has(skill.id),
+                          onSelect: () => handleHideOnDevice(skill),
+                        },
+                        {
                           key: "delete",
-                          label: t("common.delete"),
+                          label: t("mySkills.deletePermanently"),
                           icon: <Trash2 className="h-3.5 w-3.5" />,
                           danger: true,
-                          onSelect: () => setSkillToDelete(skill),
+                          onSelect: () => {
+                            setSkillToDeleteEverywhere(skill);
+                            void fetchDeviceStates(skill.id);
+                          },
                         },
                       ]}
                     />
                     <ToggleSwitch
-                      checked={enabledInPreset}
-                      disabled={!viewedPreset}
-                      onChange={() => handleTogglePreset(skill)}
-                      title={enabledInPreset ? t("mySkills.enabledButton") : t("mySkills.enable")}
+                      checked={skill.enabled}
+                      loading={togglingDeviceIds.has(skill.id)}
+                      onChange={() => handleToggleDeviceSkill(skill)}
+                      title={skill.enabled ? t("mySkills.disable") : t("mySkills.enable")}
                     />
                   </div>
                 )}
@@ -1997,18 +2215,45 @@ export function MySkills() {
         }}
       />
       <ConfirmDialog
+        open={batchHideConfirm}
+        message={t("mySkills.removeFromDeviceBatch", { count: selectedIds.size })}
+        confirmLabel={t("mySkills.removeFromDevice")}
+        onClose={() => setBatchHideConfirm(false)}
+        onConfirm={handleBatchHideOnDevice}
+      />
+      <ConfirmDialog
         open={batchDeleteConfirm}
-        message={t("mySkills.batchDeleteConfirm", { count: selectedIds.size })}
+        message={t("mySkills.batchDeleteEverywhereConfirm", {
+          count: selectedIds.size,
+          devices: batchDeviceSummary ?? t("mySkills.deviceHidden"),
+        })}
         onClose={() => setBatchDeleteConfirm(false)}
         onConfirm={handleBatchDelete}
       />
       <ConfirmDialog
-        open={skillToDelete !== null}
-        title={t("mySkills.delete")}
-        message={t("mySkills.deleteConfirm", { name: skillToDelete?.name || "" })}
-        onClose={() => setSkillToDelete(null)}
+        open={skillToDeleteEverywhere !== null}
+        title={t("mySkills.deletePermanently")}
+        message={(() => {
+          const target = skillToDeleteEverywhere;
+          if (!target) return "";
+          const cached = deviceStatesCache[target.id];
+          const slugs = cached
+            ? cached.states.map((s) => s.slug)
+            : [];
+          return t("mySkills.deleteEverywhereConfirm", {
+            name: target.name,
+            count: slugs.length > 0 ? slugs.length : 1,
+            devices: slugs.length > 0 ? slugs.join(", ") : target.name,
+          });
+        })()}
+        details={(() => {
+          const target = skillToDeleteEverywhere;
+          const cached = target ? deviceStatesCache[target.id] : undefined;
+          return cached ? cached.states.map((s) => `${s.slug} · ${s.enabled ? t("mySkills.deviceOn") : t("mySkills.deviceOff")}${s.isMine ? " · ✓" : ""}`) : undefined;
+        })()}
+        onClose={() => setSkillToDeleteEverywhere(null)}
         onConfirm={async () => {
-          if (skillToDelete) handleDeleteSkill(skillToDelete);
+          if (skillToDeleteEverywhere) handleDeleteSkill(skillToDeleteEverywhere);
         }}
       />
       <ConfirmDialog

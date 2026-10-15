@@ -182,6 +182,13 @@
       "newConflicts": "{{count}} skill(s) cambiaron en dos dispositivos a la vez. Se conserva tu versión local — revísalos abajo."
     },
     "restoreSafetyPoint": "Tu estado anterior se guardó como instantánea {{tag}} — puedes restaurarlo desde el historial en cualquier momento.",
+    "restoreSelect": {
+      "title": "Elige los skills de este equipo",
+      "message": "La copia ya está aquí. Todo queda visible salvo lo que desmarques: los desmarcados se ocultan solo en este equipo y siguen sincronizados en los demás.",
+      "selection": "{{enabled}} visibles · {{hidden}} ocultos en este equipo",
+      "confirm": "Listo",
+      "applied": "{{count}} skills ocultos en este equipo"
+    },
     "scope": {
       "excluded": {
         "local": "Rutas específicas de la máquina, ajustes de la aplicación y configuración local de agentes",
@@ -300,6 +307,18 @@
     "deleteConfirm": "¿Eliminar el skill \"{{name}}\" permanentemente? Esto elimina sus archivos de la biblioteca central, enlaces de preset y destinos sincronizados en agentes.",
     "deleteSelected": "Eliminar {{count}}",
     "deleted": "eliminado",
+    "deviceHidden": "Oculto en este equipo",
+    "deviceHiddenToast": "{{name}} oculto en este equipo",
+    "deviceShownToast": "{{name}} visible en este equipo",
+    "removeFromDevice": "Quitar de este equipo",
+    "removeFromDeviceBatch": "Quitar {{count}} de este equipo",
+    "removeFromDeviceToast": "{{count}} skills ocultos en este equipo",
+    "deletePermanently": "Eliminar definitivamente…",
+    "deleteEverywhereConfirm": "¿Eliminar el skill \"{{name}}\" en todas partes? Está en {{count}} equipos ({{devices}}) y esto elimina sus archivos de la biblioteca central, enlaces de preset y destinos sincronizados en todos ellos.",
+    "batchDeleteEverywhereConfirm": "¿Eliminar {{count}} skills seleccionados en todas partes? Están en {{devices}} y esto elimina archivos de la biblioteca central, enlaces de preset y destinos sincronizados en todos los equipos.",
+    "resetToGlobal": "Volver al ajuste compartido ({{state}})",
+    "deviceOn": "activado",
+    "deviceOff": "desactivado",
     "deselectAll": "Deseleccionar todo",
     "disable": "Deshabilitar",
     "disableForPreset": "Deshabilitar para el preset actual",

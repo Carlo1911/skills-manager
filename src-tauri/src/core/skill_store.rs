@@ -337,6 +337,103 @@ impl SkillStore {
         Ok(())
     }
 
+    // ── Per-device skill enabled (opción C) ──
+
+    /// This device's view of a skill's enabled flag, if recorded.
+    /// INTEGER 0/1 on disk maps to bool here.
+    pub fn get_device_state(&self, skill_id: &str, device_slug: &str) -> Result<Option<bool>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT enabled FROM skill_device_state WHERE skill_id = ?1 AND device_slug = ?2",
+        )?;
+        let mut rows = stmt.query_map(params![skill_id, device_slug], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v != 0)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Record (or overwrite) one device's enabled flag for a skill.
+    /// `explicit` marks a real user decision (toggle UI, restore-select):
+    /// only explicit rows are published into metadata `devices{}`. Reindex
+    /// materialization passes `explicit=false` so derived values never churn
+    /// the shared blob (§10 convergence).
+    pub fn set_device_state(
+        &self,
+        skill_id: &str,
+        device_slug: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        self.set_device_state_explicit(skill_id, device_slug, enabled, false)
+    }
+
+    /// Explicit user decision: published to the backup. See `set_device_state`.
+    pub fn set_device_state_explicit(
+        &self,
+        skill_id: &str,
+        device_slug: &str,
+        enabled: bool,
+        explicit: bool,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO skill_device_state (skill_id, device_slug, enabled, explicit, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(skill_id, device_slug)
+             DO UPDATE SET enabled = excluded.enabled, explicit = excluded.explicit, updated_at = excluded.updated_at",
+            params![skill_id, device_slug, enabled as i32, explicit as i32, now],
+        )?;
+        Ok(())
+    }
+
+    /// Only user-decided rows: the set metadata `devices{}` mirrors.
+    pub fn explicit_device_states_for_skill(
+        &self,
+        skill_id: &str,
+    ) -> Result<Vec<(String, bool)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT device_slug, enabled FROM skill_device_state WHERE skill_id = ?1 AND explicit = 1 ORDER BY device_slug",
+        )?;
+        let rows = stmt.query_map(params![skill_id], |row| {
+            let slug: String = row.get(0)?;
+            let enabled: i64 = row.get(1)?;
+            Ok((slug, enabled != 0))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Every known device's enabled flag for a skill, ordered by slug.
+    /// The full set is what metadata `devices{}` mirrors into the backup.
+    pub fn device_states_for_skill(&self, skill_id: &str) -> Result<Vec<(String, bool)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT device_slug, enabled FROM skill_device_state WHERE skill_id = ?1 ORDER BY device_slug",
+        )?;
+        let rows = stmt.query_map(params![skill_id], |row| {
+            let slug: String = row.get(0)?;
+            let enabled: i64 = row.get(1)?;
+            Ok((slug, enabled != 0))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Drop this skill's per-device overrides. Deleting the skill row already
+    /// cascades (FK), so this is only for explicit resets.
+    pub fn clear_device_state(&self, skill_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM skill_device_state WHERE skill_id = ?1",
+            params![skill_id],
+        )?;
+        Ok(())
+    }
+
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_skill_after_install(
         &self,
@@ -1504,6 +1601,73 @@ mod scenario_membership_tests {
             .get_enabled_tools_for_scenario_skill("ghost-s", "k1")
             .unwrap()
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod device_state_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn store_with_skill() -> SkillStore {
+        let tmp = tempdir().unwrap();
+        // Leak the dir: SkillStore has no path handle, and the DB lives
+        // past this function through the open connection.
+        let dir = tmp.keep();
+        let store = SkillStore::new(&dir.join("test.db")).unwrap();
+        store
+            .insert_skill(&SkillRecord {
+                id: "k1".to_string(),
+                name: "K1".to_string(),
+                description: None,
+                source_type: "import".to_string(),
+                source_ref: None,
+                source_ref_resolved: None,
+                source_subpath: None,
+                source_branch: None,
+                source_revision: None,
+                remote_revision: None,
+                central_path: "/tmp/k1".to_string(),
+                content_hash: None,
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+                status: "ok".to_string(),
+                update_status: "local_only".to_string(),
+                last_checked_at: None,
+                last_check_error: None,
+            })
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn device_state_round_trip_and_clear() {
+        let store = store_with_skill();
+        assert_eq!(store.get_device_state("k1", "laptop").unwrap(), None);
+        store.set_device_state("k1", "laptop", false).unwrap();
+        assert_eq!(store.get_device_state("k1", "laptop").unwrap(), Some(false));
+        store.set_device_state("k1", "laptop", true).unwrap();
+        assert_eq!(store.get_device_state("k1", "laptop").unwrap(), Some(true));
+        store.set_device_state("k1", "desktop", false).unwrap();
+        assert_eq!(
+            store.device_states_for_skill("k1").unwrap(),
+            vec![
+                ("desktop".to_string(), false),
+                ("laptop".to_string(), true),
+            ]
+        );
+        store.clear_device_state("k1").unwrap();
+        assert!(store.device_states_for_skill("k1").unwrap().is_empty());
+        assert_eq!(store.get_device_state("k1", "laptop").unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_skill_cascades_device_state() {
+        let store = store_with_skill();
+        store.set_device_state("k1", "laptop", false).unwrap();
+        store.delete_skill("k1").unwrap();
+        assert!(store.device_states_for_skill("k1").unwrap().is_empty());
     }
 }
 

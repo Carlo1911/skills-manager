@@ -1039,6 +1039,9 @@ pub fn run() {
             commands::skills::set_skill_tags,
             commands::skills::rename_tag,
             commands::skills::delete_tag,
+            commands::skills::set_skill_device_enabled,
+            commands::skills::reset_skill_device_override,
+            commands::skills::device_skill_states,
             commands::skills::cancel_install,
             commands::skills::batch_import_folder,
             // Sync
@@ -1090,6 +1093,7 @@ pub fn run() {
             commands::git_backup::git_backup_pull,
             commands::git_backup::git_backup_clone,
             commands::git_backup::git_backup_reclone,
+            commands::git_backup::device_slugs_for_skill,
             commands::git_backup::git_backup_create_snapshot,
             commands::git_backup::git_backup_list_versions,
             commands::git_backup::git_backup_restore_version,

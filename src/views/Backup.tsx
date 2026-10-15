@@ -28,6 +28,7 @@ import { ToggleSwitch } from "../components/ToggleSwitch";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GitRecoveryDialog } from "../components/GitRecoveryDialog";
 import { GitSetupDialog } from "../components/GitSetupDialog";
+import { useRestoreSelect } from "../hooks/useRestoreSelect";
 import { useApp } from "../context/AppContext";
 import { getErrorKind, getErrorMessage } from "../lib/error";
 import { mapGitErrorMessage } from "../lib/gitErrors";
@@ -97,6 +98,7 @@ export function Backup() {
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [recoveryReason, setRecoveryReason] = useState<RecoveryReason>("unrelated_histories");
   const { attempt: offerSetAsideOnDiffering, announceLocalCopies, dialog: setAsideDialog } = useSetAsideOffer();
+  const { promptRestoreSelect, restoreSelectDialog } = useRestoreSelect();
   const [restoreVersionTag, setRestoreVersionTag] = useState<string | null>(null);
   const [restoringVersionTag, setRestoringVersionTag] = useState<string | null>(null);
   const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
@@ -387,11 +389,17 @@ export function Backup() {
   const handleSetupClone = async () => {
     setLoading("start");
     try {
+      let cloned = false;
       await offerSetAsideOnDiffering(async (setAside) => {
         announceLocalCopies(await api.gitBackupClone(remoteConfig, setAside));
         toast.success(t("settings.gitCloneSuccess"));
         await Promise.all([refreshGitStatus(true), refreshManagedSkills(), refreshPresets(), refreshVersions()]);
+        cloned = true;
       });
+      // Inside `attempt` a CLONE_LOCAL_DIFFERS only stages the set-aside
+      // prompt; the picker must wait for a real clone (the confirm re-runs
+      // this same callback, which then prompts).
+      if (cloned) await promptRestoreSelect();
     } catch (error) {
       toast.error(mapGitError(error), { duration: 12000 });
       throw error;
@@ -424,6 +432,7 @@ export function Backup() {
     }
     setLoading("recovery");
     try {
+      let cloned = false;
       await offerSetAsideOnDiffering(async (setAside) => {
         const result = await api.gitBackupReclone(remoteConfig, setAside);
         announceLocalCopies(result.local_copies);
@@ -433,7 +442,9 @@ export function Backup() {
           toast.success(t("settings.gitRecoveryRecloneSuccess"));
         }
         await Promise.all([refreshGitStatus(true), refreshManagedSkills(), refreshPresets(), refreshVersions()]);
+        cloned = true;
       });
+      if (cloned) await promptRestoreSelect();
     } catch (error) {
       toast.error(mapGitError(error), { duration: 12000 });
       throw error;
@@ -593,10 +604,13 @@ export function Backup() {
         await Promise.all([refreshGitStatus(true), refreshManagedSkills(), refreshPresets(), refreshVersions()]);
       };
       if (!status.is_repo) {
+        let cloned = false;
         await offerSetAsideOnDiffering(async (setAside) => {
           announceLocalCopies(await api.gitBackupClone(res.url, setAside));
           await restored();
+          cloned = true;
         });
+        if (cloned) await promptRestoreSelect();
       } else {
         await api.gitBackupSetRemote(res.url);
         await restored();
@@ -1385,6 +1399,7 @@ export function Backup() {
       />
       {/* After the setup and recovery dialogs, so it opens on top of them. */}
       {setAsideDialog}
+      {restoreSelectDialog}
     </div>
   );
 }
