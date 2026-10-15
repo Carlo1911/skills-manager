@@ -236,53 +236,90 @@ pub async fn get_skill_tool_toggles(
 ) -> Result<Vec<SkillToolToggleDto>, AppError> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let skill_ids = store
-            .get_skill_ids_for_scenario(&preset_id)
-            .map_err(AppError::db)?;
-        if !skill_ids.contains(&skill_id) {
-            return Err(AppError::not_found("Skill is not enabled in this preset"));
-        }
-
-        let disabled = disabled_tools(&store);
-        let all_adapters = tool_adapters::all_tool_adapters(&store);
-        let default_enabled_keys: Vec<String> = all_adapters
-            .iter()
-            .filter(|adapter| adapter.is_installed() && !disabled.contains(&adapter.key))
-            .map(|adapter| adapter.key.clone())
-            .collect();
-        store
-            .ensure_scenario_skill_tool_defaults(&preset_id, &skill_id, &default_enabled_keys)
-            .map_err(AppError::db)?;
-
-        let toggles = store
-            .get_scenario_skill_tool_toggles(&preset_id, &skill_id)
-            .map_err(AppError::db)?;
-        let enabled_map: std::collections::HashMap<String, bool> = toggles
-            .into_iter()
-            .map(|toggle| (toggle.tool, toggle.enabled))
-            .collect();
-
-        Ok(all_adapters
-            .into_iter()
-            .map(|adapter| {
-                let globally_enabled = !disabled.contains(&adapter.key);
-                let available = adapter.is_installed() && globally_enabled;
-                SkillToolToggleDto {
-                    // Unavailable tools are always presented as disabled in UI.
-                    enabled: if available {
-                        enabled_map.get(&adapter.key).copied().unwrap_or(false)
-                    } else {
-                        false
-                    },
-                    tool: adapter.key.clone(),
-                    display_name: adapter.display_name.clone(),
-                    installed: adapter.is_installed(),
-                    globally_enabled,
-                }
-            })
-            .collect())
+        skill_tool_toggle_dtos(&store, &skill_id, &preset_id)
     })
     .await?
+}
+
+/// Per-agent toggle state for one skill in one preset.
+///
+/// The two preset kinds mean different things, mirroring what
+/// `set_skill_tool_toggle` does with them:
+///
+/// - The ACTIVE preset's toggle is the live deploy control — flipping it
+///   deploys or undeploys right now. It therefore reports deployment truth
+///   from `skill_targets`. `scenario_skill_tools` alone must not claim a
+///   skill is synced: rows are seeded `enabled = 1` for every installed
+///   agent, including one installed after the preset was last applied,
+///   which has nothing on disk yet. Every other surface that shows this
+///   state — the workspace per-agent count, the card agent dots, the batch
+///   sync dialog — reads `skill_targets`, so the detail panel has to agree.
+/// - An inactive preset's toggle is the configuration `apply` will deploy
+///   later, so it reports the stored intent.
+fn skill_tool_toggle_dtos(
+    store: &SkillStore,
+    skill_id: &str,
+    preset_id: &str,
+) -> Result<Vec<SkillToolToggleDto>, AppError> {
+    let skill_ids = store
+        .get_skill_ids_for_scenario(preset_id)
+        .map_err(AppError::db)?;
+    if !skill_ids.iter().any(|id| id == skill_id) {
+        return Err(AppError::not_found("Skill is not enabled in this preset"));
+    }
+
+    let disabled = disabled_tools(store);
+    let all_adapters = tool_adapters::all_tool_adapters(store);
+    let default_enabled_keys: Vec<String> = all_adapters
+        .iter()
+        .filter(|adapter| adapter.is_installed() && !disabled.contains(&adapter.key))
+        .map(|adapter| adapter.key.clone())
+        .collect();
+    store
+        .ensure_scenario_skill_tool_defaults(preset_id, skill_id, &default_enabled_keys)
+        .map_err(AppError::db)?;
+
+    let toggles = store
+        .get_scenario_skill_tool_toggles(preset_id, skill_id)
+        .map_err(AppError::db)?;
+    let enabled_map: std::collections::HashMap<String, bool> = toggles
+        .into_iter()
+        .map(|toggle| (toggle.tool, toggle.enabled))
+        .collect();
+
+    let is_active = store
+        .get_active_scenario_id()
+        .map_err(AppError::db)?
+        .as_deref()
+        == Some(preset_id);
+    let deployed: std::collections::HashSet<String> = if is_active {
+        store
+            .get_targets_for_skill(skill_id)
+            .map_err(AppError::db)?
+            .into_iter()
+            .map(|target| target.tool)
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    Ok(all_adapters
+        .into_iter()
+        .map(|adapter| {
+            let globally_enabled = !disabled.contains(&adapter.key);
+            let available = adapter.is_installed() && globally_enabled;
+            let intent = enabled_map.get(&adapter.key).copied().unwrap_or(false);
+            SkillToolToggleDto {
+                // Unavailable tools are always presented as disabled in UI.
+                // For the active preset, "on" also requires a live deployment.
+                enabled: available && intent && (!is_active || deployed.contains(&adapter.key)),
+                tool: adapter.key.clone(),
+                display_name: adapter.display_name.clone(),
+                installed: adapter.is_installed(),
+                globally_enabled,
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -623,6 +660,139 @@ mod tests {
         let remaining = store.get_targets_for_skill("s1").unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].tool, "agent_b");
+    }
+
+    /// Two installed custom agents with their own skills directories — the
+    /// setup behind "installed an agent, the preset says synced, disk says
+    /// nothing": scenario rows are seeded enabled for both, only one has a
+    /// deployment.
+    fn configure_two_custom_tools_with_own_dirs(
+        store: &SkillStore,
+        dir_a: &std::path::Path,
+        dir_b: &std::path::Path,
+    ) {
+        let custom_tools: Vec<CustomToolDef> = [("agent_a", dir_a), ("agent_b", dir_b)]
+            .into_iter()
+            .map(|(key, dir)| CustomToolDef {
+                key: key.to_string(),
+                display_name: key.to_string(),
+                skills_dir: dir.to_string_lossy().to_string(),
+                project_relative_skills_dir: None,
+                category: Default::default(),
+                icon: None,
+            })
+            .collect();
+        store
+            .set_setting(
+                "custom_tools",
+                &serde_json::to_string(&custom_tools).unwrap(),
+            )
+            .unwrap();
+        let disabled_builtin_tools: Vec<String> = tool_adapters::all_non_custom_keys(store);
+        store
+            .set_setting(
+                "disabled_tools",
+                &serde_json::to_string(&disabled_builtin_tools).unwrap(),
+            )
+            .unwrap();
+        store.set_setting("sync_mode", "copy").unwrap();
+    }
+
+    fn register_scenario(store: &SkillStore, scenario_id: &str, skill_id: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+        store
+            .insert_scenario(&crate::core::skill_store::ScenarioRecord {
+                id: scenario_id.to_string(),
+                name: scenario_id.to_string(),
+                description: None,
+                icon: None,
+                sort_order: 0,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+        store.add_skill_to_scenario(scenario_id, skill_id).unwrap();
+    }
+
+    fn enabled_by_tool(dtos: &[SkillToolToggleDto]) -> std::collections::HashMap<&str, bool> {
+        dtos
+            .iter()
+            .map(|dto| (dto.tool.as_str(), dto.enabled))
+            .collect()
+    }
+
+    /// The active preset's toggle is the live deploy control, so it reads
+    /// deployment state: an agent whose scenario row was just seeded enabled
+    /// (installed after the preset was last applied) has nothing on disk and
+    /// must read OFF — matching the workspace count, the card agent dots, and
+    /// the batch sync dialog, which all read `skill_targets`.
+    #[test]
+    fn active_preset_toggle_reports_deployment_not_seeded_intent() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let source_base = tmp.path().join("central");
+        let dir_a = tmp.path().join("agent-a-skills");
+        let dir_b = tmp.path().join("agent-b-skills");
+        fs::create_dir_all(&source_base).unwrap();
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        configure_two_custom_tools_with_own_dirs(&store, &dir_a, &dir_b);
+
+        let dir = write_skill_dir(&source_base, "my-skill", "content");
+        store
+            .insert_skill(&sample_skill("s1", "my-skill", &dir))
+            .unwrap();
+        register_scenario(&store, "active", "s1");
+        store.set_active_scenario("active").unwrap();
+
+        // Deployed to agent_a only; agent_b is installed but never synced.
+        sync_skill_to_tool_internal(&store, "s1", "agent_a").unwrap();
+
+        let dtos = skill_tool_toggle_dtos(&store, "s1", "active").unwrap();
+        let enabled = enabled_by_tool(&dtos);
+        assert_eq!(
+            enabled["agent_a"], true,
+            "the deployed agent reads on"
+        );
+        assert_eq!(
+            enabled["agent_b"], false,
+            "a seeded intent row without a deployment must not read as synced"
+        );
+        assert!(
+            store.get_targets_for_skill("s1").unwrap().iter().all(|t| t.tool != "agent_b"),
+            "the test setup must model an agent with no deployment"
+        );
+    }
+
+    /// An inactive preset's toggle is the configuration `apply` deploys
+    /// later, so it keeps reporting stored intent even with nothing on disk.
+    #[test]
+    fn inactive_preset_toggle_reports_stored_intent() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let source_base = tmp.path().join("central");
+        let dir_a = tmp.path().join("agent-a-skills");
+        let dir_b = tmp.path().join("agent-b-skills");
+        fs::create_dir_all(&source_base).unwrap();
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        configure_two_custom_tools_with_own_dirs(&store, &dir_a, &dir_b);
+
+        let dir = write_skill_dir(&source_base, "my-skill", "content");
+        store
+            .insert_skill(&sample_skill("s1", "my-skill", &dir))
+            .unwrap();
+        register_scenario(&store, "active", "s1");
+        register_scenario(&store, "planned", "s1");
+        store.set_active_scenario("active").unwrap();
+
+        let dtos = skill_tool_toggle_dtos(&store, "s1", "planned").unwrap();
+        let enabled = enabled_by_tool(&dtos);
+        assert_eq!(
+            enabled["agent_a"], true,
+            "an inactive preset shows what apply will deploy"
+        );
+        assert_eq!(enabled["agent_b"], true);
     }
 
     #[test]

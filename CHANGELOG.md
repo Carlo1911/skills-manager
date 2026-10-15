@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A skill's detail panel no longer claims an agent is synced when nothing was deployed there** — The per-agent toggles read the preset's stored intent, while the workspace skill count, the card agent dots and the batch sync dialog read what is actually on disk. Installing a new agent seeded its toggle rows as enabled for every preset skill: installing Claude Code left the app reporting "0 skills" for it in Global Workspace and a dim agent dot on every card, yet each skill's detail panel showed Claude Code checked and "2/2 synced" with no way to install from there, because the only click left was to turn it off. The active preset's toggles now report deployment state from `skill_targets`, the same source every other surface reads. An inactive preset still shows its stored intent, since applying it is what deploys.
+
 ## [1.42.0] - 2026-10-14
 
 ### Release Overview
