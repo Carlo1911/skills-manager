@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
 
 use super::git2_engine;
 use super::git_credentials;
@@ -18,6 +21,26 @@ fn git_command() -> Command {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
     cmd
+}
+
+/// Upper bound for a single network round-trip against the backup remote
+/// (fetch, push, ls-remote). The runner below kills the child past this
+/// deadline: a hung SSH/HTTPS session must surface as an error the caller
+/// can handle (retry, skip, go offline), never as a lock the whole app waits
+/// on. Local-only commands bypass this and are unaffected.
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Subcommands that reach the network. Only these get the killable wait;
+/// everything else keeps the plain blocking `output()` (they are local and
+/// cannot wedge the repo lock on a dead socket).
+fn is_network_command(args: &[&str]) -> bool {
+    matches!(args.first(), Some(cmd) if {
+        let cmd = cmd.trim_start_matches('-');
+        matches!(
+            cmd,
+            "fetch" | "push" | "pull" | "ls-remote" | "clone" | "archive"
+        )
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1864,6 +1887,12 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn run_git_env(dir: &Path, args: &[&str], envs: &[(String, String)]) -> Result<String> {
+    // Network commands run under a killable wait: without it a wedged
+    // SSH/HTTPS session blocks forever, and every caller holding the
+    // central-repo lock wedges with it (the "repository is busy" storm).
+    if is_network_command(args) {
+        return run_git_env_killable(dir, args, envs);
+    }
     let output = git_command()
         .arg("-C")
         .arg(dir)
@@ -1871,7 +1900,79 @@ fn run_git_env(dir: &Path, args: &[&str], envs: &[(String, String)]) -> Result<S
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .output()
         .context("Failed to run git command")?;
+    check_git_output(args, &output)
+}
 
+/// Spawn the child with piped stderr, then poll it until it exits or
+/// `NETWORK_TIMEOUT` elapses — then kill it and report a timeout. The
+/// stderr drain keeps a chatty remote from wedging the child on a full
+/// pipe while the parent waits.
+fn run_git_env_killable(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(String, String)],
+) -> Result<String> {
+    use std::process::Stdio;
+    use std::sync::mpsc::channel;
+
+    let mut child = git_command()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        // Never let a remote ask for input: without this a credential or
+        // host-key prompt blocks reads on stdin forever, past any timeout.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to run git command")?;
+
+    // Drain stderr on a thread so the child never blocks on a full pipe.
+    let (stderr_tx, stderr_rx) = channel::<Vec<u8>>();
+    if let Some(mut stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            let _ = stderr_tx.send(buf);
+        });
+    }
+
+    let deadline = Instant::now() + NETWORK_TIMEOUT;
+    loop {
+        match child.try_wait().context("Failed to wait for git")? {
+            Some(status) => {
+                let output = std::process::Output {
+                    status,
+                    stdout: {
+                        let mut out = Vec::new();
+                        if let Some(mut stdout) = child.stdout.take() {
+                            let _ = stdout.read_to_end(&mut out);
+                        }
+                        out
+                    },
+                    stderr: stderr_rx.try_recv().unwrap_or_default(),
+                };
+                return check_git_output(args, &output);
+            }
+            None => {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!(
+                        "git {} timed out after {}s",
+                        args.first().unwrap_or(&"?"),
+                        NETWORK_TIMEOUT.as_secs()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+fn check_git_output(_args: &[&str], output: &std::process::Output) -> Result<String> {
+    let _ = _args;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -3493,5 +3594,58 @@ mod tests {
             );
         }
         assert_eq!(siblings_named(&skills, "skills-git-recovery").len(), earlier.len());
+    }
+
+    // ── is_network_command ──
+
+    #[test]
+    fn network_classifier_covers_remote_subcommands() {
+        for args in [
+            &["fetch", "origin", "main"][..],
+            &["push"][..],
+            &["pull"][..],
+            &["ls-remote", "--heads", "origin"][..],
+            &["clone", "url", "dst"][..],
+        ] {
+            assert!(is_network_command(args), "{args:?} must take the killable path");
+        }
+    }
+
+    #[test]
+    fn network_classifier_leaves_local_commands_alone() {
+        for args in [
+            &["status", "--porcelain"][..],
+            &["rev-parse", "HEAD"][..],
+            &["commit", "-m", "x"][..],
+            &["--version"][..],
+            &[][..],
+        ] {
+            assert!(!is_network_command(args), "{args:?} must keep plain output()");
+        }
+    }
+
+    /// A network command against an unroutable remote must fail fast with a
+    /// timeout instead of blocking forever past `NETWORK_TIMEOUT`. Uses
+    /// `ls-remote` (read-only, no repo needed) with a reserved TEST-NET-1
+    /// address so no packet can ever come back.
+    #[test]
+    fn network_command_against_a_black_hole_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let err = run_git_env(
+            dir.path(),
+            &["ls-remote", "https://192.0.2.1/black-hole.git"],
+            &[("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())],
+        )
+        .expect_err("a black-hole remote must fail");
+        let elapsed = start.elapsed();
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected a timeout error, got: {err:#}"
+        );
+        assert!(
+            elapsed < NETWORK_TIMEOUT + std::time::Duration::from_secs(30),
+            "killable wait overran: {elapsed:?}"
+        );
     }
 }
