@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Updating skills no longer fails with "skills repository is busy"** — A background backup round held the central-repo lock across its network fetch, so when that fetch wedged (e.g. an SSH session that never answers) every concurrent update check failed per skill with `repository is busy`. The fetch now runs before the lock is taken, and every network git command (fetch, push, pull, ls-remote) fails fast past a 60s timeout with `GIT_TERMINAL_PROMPT=0` so a hung remote can never wedge the lock holder again.
+
 ## [1.42.2] - 2026-10-18
 
 ### Release Overview
