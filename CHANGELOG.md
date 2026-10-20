@@ -10,6 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **A skill's detail panel no longer claims an agent is synced when nothing was deployed there** — The per-agent toggles read the preset's stored intent, while the workspace skill count, the card agent dots and the batch sync dialog read what is actually on disk. Installing a new agent seeded its toggle rows as enabled for every preset skill: installing Claude Code left the app reporting "0 skills" for it in Global Workspace and a dim agent dot on every card, yet each skill's detail panel showed Claude Code checked and "2/2 synced" with no way to install from there, because the only click left was to turn it off. The active preset's toggles now report deployment state from `skill_targets`, the same source every other surface reads. An inactive preset still shows its stored intent, since applying it is what deploys.
 
+## [1.42.2] - 2026-10-18
+
+### Release Overview
+- Two fixes for Linux and Windows: backups and Git installs work again in the Linux AppImage, and Windows and Linux no longer show an empty strip at the top of the window.
+
+### User-facing
+- **Linux AppImage: backups and Git installs work again** — In the AppImage, Back Up Now and installing or updating skills from Git could fail with a Git HTTPS helper / libcurl symbol lookup error. The system `git` was loading libraries bundled inside the AppImage. Git now runs with the system's own libraries. Thanks to @JonathanPitre (#539, #536).
+- **Windows and Linux: no empty strip at the top of the window** — A 28px band reserved for the macOS window buttons also appeared on Windows and Linux, just below the native title bar. It now appears only on macOS. Thanks to @YageGeng (#547).
+
+### Developer & Governance
+- The two identical `git_command()` helpers in `git_fetcher.rs` and `git_backup.rs` are now one, in `core/git_command.rs`. On Linux, when `APPDIR` is set, Git child processes no longer inherit `LD_LIBRARY_PATH`; the app's own environment is unchanged. The new regression test runs only on Linux, and the Linux CI job only runs `cargo check`.
+
+## [1.42.1] - 2026-10-17
+
+### Release Overview
+- Fixes for skills that came back after being removed from a preset, preset changes that did not reach other devices, monorepo skills that always showed an update, and workspace folders deleted by a single click. The market now shows the real error, and local, Windows and Linux installs get smaller fixes.
+
+### User-facing
+- **Removing a skill from a workspace asks first** — In a library skill's Project Workspaces block, clicking the green "Added" chip deleted the skill's folder from the workspace at once. The folder did not go to the Trash, and in a linked workspace it is the folder the agent reads. The chip now asks first. On a project page, turning an agent off for a skill, or turning a preset off, also asks when a workspace copy differs from the library (#542).
+- **Skills removed from the active preset stay removed** — Removing a skill that belongs to the active preset came back at the next launch. This happened whether you removed it on an agent page, from the tray, or with `skills-manager-cli presets undeploy` / `skills undeploy`. The removal is now kept, and deploying the skill again brings it back (#549).
+- **Removing the last preset member syncs to your other devices** — When you removed the last skill from your presets, other devices kept the old membership. They could even back it up again, so the removed skill came back everywhere. Removals now sync (#553).
+- **Monorepo skills no longer always show an update** — A skill installed from a subfolder of a repository was flagged "update available" after any commit anywhere in that repository. Now only changes to its own folder count (#561, #507).
+- **Remove a partially added preset** — When only some of a preset's skills are in a workspace, a × next to the preset removes them. Thanks to @huoguojun123 (#571).
+- **The market shows the real error** — When skills.sh could not be reached, the market said `[object Object]`. It now shows the cause, such as a timeout or a DNS failure (#529).
+- **Uploading a local-only skill whose folder links back into the library works** — It failed with "infinite recursion". Thanks to @shuaiyafei (#565, #560).
+- **Windows: installing a local skill** now shows the skill's name, not its full path, in the confirmation. Thanks to @shuaiyafei (#558, #512).
+- **Linux: the tray icon no longer turns into another Tauri app's icon** while both are running. Thanks to @jubeater (#564, #563).
+
+### Developer & Governance
+- Settings reads the app version at runtime with `getVersion()`. The locale files hold a `{{version}}` template, and `release:prepare` no longer rewrites them. Thanks to @shuaiyafei (#557, #511).
+- Sync metadata counts a preset snapshot as complete when `schema.json` and `scenarios/` exist. A missing `scenario-skills/` now means zero memberships, because Git drops the empty directory.
+- Per-agent preset toggles changed outside the skill detail panel are written to that member's metadata file under the repo lock. Before, they were stored only in the database, and the next reindex overwrote them. `apply_skills_to_tools` now writes these toggles for active-preset skills before it adds or removes anything.
+- The update check for subfolder skills fetches only trees and commits (`--filter=blob:none --depth=1`) into a throwaway bare repository. It compares the subfolder's tree and every ancestor `.gitattributes` with libgit2. Any failure still reports an update.
+- When the central destination of a local install is a real directory, the install returns early; a symlink there is still copied into the library.
+
 ## [1.42.0] - 2026-10-14
 
 ### Release Overview

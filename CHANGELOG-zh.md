@@ -5,6 +5,39 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.42.2] - 2026-10-18
+
+### 发布概览
+- 两项 Linux / Windows 修复：Linux AppImage 里的备份和 Git 安装恢复正常；Windows 和 Linux 的窗口顶部不再有一条空白。
+
+### 用户可见更新
+- **Linux AppImage：备份和 Git 安装恢复正常** — 在 AppImage 里，「立即备份」以及从 Git 安装、更新 Skill 可能失败，报 Git HTTPS helper / libcurl 符号查找错误。原因是系统的 `git` 加载了 AppImage 自带的库。现在 Git 使用系统自己的库。感谢 @JonathanPitre（#539、#536）。
+- **Windows 和 Linux：窗口顶部不再有空白条** — 为 macOS 窗口按钮预留的 28px 空白条，在 Windows 和 Linux 上也会出现在原生标题栏下方。现在只在 macOS 上保留。感谢 @YageGeng（#547）。
+
+### 开发者与治理更新
+- `git_fetcher.rs` 和 `git_backup.rs` 里两份相同的 `git_command()` 合并到 `core/git_command.rs`。Linux 上设置了 `APPDIR` 时，Git 子进程不再继承 `LD_LIBRARY_PATH`，应用自身的环境不变。新增的回归测试只在 Linux 上运行，而 Linux CI 只跑 `cargo check`。
+## [1.42.1] - 2026-10-17
+
+### 发布概览
+- 修复几类问题：从 Preset 移除的 Skill 重启后又回来；Preset 的改动不同步到其他设备；monorepo 里的 Skill 总显示有更新；点一下就删掉工作区目录。另外，市场页会显示真实的报错原因，本地安装、Windows 和 Linux 上也各有小修复。
+
+### 用户可见更新
+- **从工作区移除 Skill 前先确认** — 在技能库 Skill 详情的「项目工作区」区块里，点绿色的「已添加」会直接删掉工作区里这个 Skill 的目录。删除不进废纸篓；如果是关联工作区，删掉的就是 Agent 正在读的那个目录。现在点了会先确认。项目页上，关闭某个 Skill 的 Agent 开关或取消某个 Preset 时，如果工作区里的副本与技能库不一致，也会先确认（#542）。
+- **从当前生效的 Preset 移除的 Skill 不再复活** — 移除一个属于当前生效 Preset 的 Skill 后，下次启动它又会被装回来。不论是在 Agent 页、在托盘，还是用 `skills-manager-cli presets undeploy` / `skills undeploy` 移除，都有这个问题。现在会记住这次移除；重新部署则会恢复（#549）。
+- **移除最后一个 Preset 成员也能同步到其他设备** — 把 Preset 里最后一个 Skill 移除后，其他设备上的旧成员不会被删掉，还可能被它们重新备份上去，于是已移除的 Skill 在所有设备上又出现了。现在移除能正常同步（#553）。
+- **monorepo 里的 Skill 不再总显示「有更新」** — 从仓库某个子目录安装的 Skill，过去只要仓库里任何地方有新提交，就会显示「有更新」。现在只有它自己的目录变了才算（#561、#507）。
+- **可以移除部分已添加的 Preset** — 一个 Preset 只有部分 Skill 在工作区里时，旁边会出现 ×，点它即可移除这些 Skill。感谢 @huoguojun123（#571）。
+- **市场页显示真实的报错原因** — 连不上 skills.sh 时，过去只显示 `[object Object]`，现在会显示具体原因，比如超时或 DNS 解析失败（#529）。
+- **上传「仅本地」的 Skill 不再报 infinite recursion** — 当这个 Skill 的目录是指回技能库的软链时，过去会报这个错。感谢 @shuaiyafei（#565、#560）。
+- **Windows：本地安装 Skill** 后，提示里显示的是 Skill 的名称，不再是完整路径。感谢 @shuaiyafei（#558、#512）。
+- **Linux：同时运行其他 Tauri 应用时，托盘图标不再被换成它的图标**。感谢 @jubeater（#564、#563）。
+
+### 开发者与治理更新
+- 设置页改为运行时用 `getVersion()` 读取版本号；语言文件里存的是 `{{version}}` 模板，`release:prepare` 不再改写它们。感谢 @shuaiyafei（#557、#511）。
+- 同步 metadata 中，只要 `schema.json` 和 `scenarios/` 都在，Preset 快照就算完整；缺 `scenario-skills/` 表示零个成员，因为 Git 不保存空目录。
+- 在 Skill 详情面板之外修改的 Preset 按 Agent 开关，现在会在 repo 锁内写回该成员的 metadata 文件。过去只存在数据库里，下次 reindex 会被覆盖。`apply_skills_to_tools` 在添加或移除之前，会先写当前生效 Preset 中相关 Skill 的开关。
+- 子目录 Skill 的更新检查只把 tree 和 commit（`--filter=blob:none --depth=1`）取到一个用完即删的 bare 仓库，用 libgit2 比较该子目录的 tree 以及沿途每一级 `.gitattributes`。任何失败都仍按「有更新」处理。
+- 本地安装时，技能库里的目标是真实目录才直接返回；如果目标是软链，仍会复制成真实目录。
 ## [1.42.0] - 2026-10-14
 
 ### 发布概览

@@ -296,7 +296,7 @@ export function InstallSkills() {
       .catch((e) => {
         if (stale) return;
         console.error(e);
-        const message = e?.toString?.() || t("common.error");
+        const message = getErrorMessage(e, t("common.error"));
         setMarketError(message);
         toast.error(message);
       })

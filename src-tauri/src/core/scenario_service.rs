@@ -7,7 +7,7 @@ use std::time::Instant;
 use super::{
     error::{AppError, TargetConflictDetail},
     skill_store::{ScenarioRecord, SkillStore, SkillTargetRecord},
-    sync_engine, tool_adapters,
+    sync_engine, sync_metadata, tool_adapters,
     tool_service,
 };
 
@@ -955,13 +955,56 @@ pub enum BatchApplyMode {
     Remove,
 }
 
+/// Record a deploy or removal of `skill_ids × tool_keys` in the active
+/// preset's per-agent toggles, which the startup sync deploys from. Skills
+/// outside the active preset are skipped; the active preset never changes.
+/// Every launch reindexes the toggles from the sync metadata, so each changed
+/// member's file is rewritten as well (#549).
+pub fn set_active_preset_tool_toggles(
+    store: &SkillStore,
+    skill_ids: &[String],
+    tool_keys: &[String],
+    enabled: bool,
+) -> Result<(), AppError> {
+    let Ok(Some(active_id)) = store.get_active_scenario_id() else {
+        return Ok(());
+    };
+    let members = store
+        .get_skill_ids_for_scenario(&active_id)
+        .map_err(AppError::db)?;
+    let skill_ids: Vec<&String> = skill_ids.iter().filter(|id| members.contains(id)).collect();
+    if skill_ids.is_empty() || tool_keys.is_empty() {
+        return Ok(());
+    }
+    let adapter_keys: Vec<String> = tool_adapters::enabled_installed_adapters(store)
+        .iter()
+        .map(|a| a.key.clone())
+        .collect();
+    sync_metadata::with_repo_lock("set skill tool toggle", || {
+        for skill_id in skill_ids {
+            store.ensure_scenario_skill_tool_defaults(&active_id, skill_id, &adapter_keys)?;
+            for tool in tool_keys {
+                store.set_scenario_skill_tool_enabled(&active_id, skill_id, tool, enabled)?;
+            }
+            sync_metadata::write_scenario_skill_unlocked(store, &active_id, skill_id)?;
+        }
+        Ok(())
+    })
+    .map_err(AppError::db)
+}
+
 /// Apply a batch of `(skill_id × tool_key)` pairs in either Add or Remove mode
-/// without touching `active_scenario_id` or `scenario_skill_tools` toggles.
+/// without changing `active_scenario_id`.
 ///
-/// This is the tray-side preset apply primitive. Unlike [`sync_single_skill_to_tool`]
-/// (which is wrapped by the `sync_skill_to_tool` Tauri command and carries the
-/// implicit active-preset toggle side-effect), this batch is a pure
-/// "write/remove files + maintain `skill_targets` rows" operation.
+/// This is the tray-side preset apply primitive, also behind the CLI's
+/// `presets deploy/undeploy` and `skills deploy/undeploy`. It also turns the
+/// pairs on (Add) or off (Remove) in the active preset's toggles, for skills
+/// in that preset. The startup sync deploys the active preset from those
+/// toggles: one left on brought a removed skill back at the next launch, and
+/// one left off kept a deployed skill out of the preview and out of the
+/// startup repair (#549). The toggles go first, so a busy repo lock fails the
+/// batch before any file changes, and a pair that then fails to deploy is
+/// retried by the startup sync.
 ///
 /// Remove mode handles shared physical paths: a `target_path` may be referenced
 /// by multiple `(skill_id, tool)` records when several tools resolve to the same
@@ -978,6 +1021,8 @@ pub fn apply_skills_to_tools(
         return Ok(());
     }
 
+    let add = matches!(mode, BatchApplyMode::Add);
+    set_active_preset_tool_toggles(store, skill_ids, tool_keys, add)?;
     match mode {
         BatchApplyMode::Add => apply_add(store, skill_ids, tool_keys, false),
         BatchApplyMode::Remove => apply_remove(store, skill_ids, tool_keys),

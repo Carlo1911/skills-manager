@@ -1,10 +1,13 @@
+use super::git_command::git_command;
 use crate::core::central_repo;
 use crate::core::git_credentials;
+use crate::core::log_sanitize;
 use crate::core::skill_metadata;
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use git2::{Direction, Repository};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -21,18 +24,6 @@ pub const CLONE_TEMP_PREFIX: &str = "skills-manager-clone-";
 
 /// Callback type for reporting clone progress messages to the UI.
 pub type ProgressCallback = Box<dyn Fn(&str) + Send>;
-
-/// Create a `Command` for git that hides the console window on Windows.
-fn git_command() -> Command {
-    #[allow(unused_mut)]
-    let mut cmd = Command::new("git");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    cmd
-}
 
 #[derive(Debug, Clone)]
 pub struct ParsedGitSource {
@@ -1271,6 +1262,96 @@ pub fn resolve_remote_revision(
     }
 
     anyhow::bail!("Unable to resolve remote revision for {}", url)
+}
+
+/// Which `(revision, subpath)` pairs hold exactly the same directory at `head`.
+///
+/// A skill installed from a subdirectory of a monorepo would otherwise be
+/// "out of date" after every commit anywhere in that repository (#561). An equal
+/// tree id is not enough on its own: a `.gitattributes` in any directory above
+/// the subpath (line endings, filters) changes the bytes checked out into it
+/// without touching its tree. Only when those match too would an update write
+/// exactly what is already there.
+///
+/// One blobless, depth-1 fetch of `head` and every old revision serves all the
+/// pairs — trees and commits only, measured at ~400 KB for heygen-com/hyperframes.
+/// It goes into a throwaway bare repository, never a cache slot, and the trees
+/// are read with libgit2, which cannot lazily fetch a missing object the way
+/// git would in the partial repository that fetch leaves behind.
+///
+/// Any failure — no filter support, an old revision the server no longer has,
+/// a missing path — just leaves that pair out, so the caller falls back to
+/// reporting an update. This can only ever suppress a false update.
+pub fn unchanged_subtrees(
+    url: &str,
+    head: &str,
+    installed: &HashSet<(String, String)>,
+    proxy_url: Option<&str>,
+) -> HashSet<(String, String)> {
+    // Revisions reach the command line, so only full object ids get there.
+    let is_object_id = |rev: &str| rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit());
+    let pairs: Vec<&(String, String)> = installed
+        .iter()
+        .filter(|(rev, subpath)| rev != head && is_object_id(rev) && !subpath.is_empty())
+        .collect();
+    if pairs.is_empty() || !is_object_id(head) {
+        return HashSet::new();
+    }
+
+    let temp =
+        std::env::temp_dir().join(format!("skills-manager-subtree-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<HashSet<(String, String)>> {
+        Repository::init_bare(&temp)?;
+        let mut revs: Vec<&str> = pairs.iter().map(|(rev, _)| rev.as_str()).collect();
+        revs.push(head);
+        revs.sort_unstable();
+        revs.dedup();
+        let mut args = vec!["fetch", "--no-tags", "--depth=1", "--filter=blob:none", url];
+        args.extend(revs);
+        run_git_watched_at(&temp, &args, proxy_url, None, &None)?;
+
+        let repo = Repository::open_bare(&temp)?;
+        // The directory's tree, then the `.gitattributes` entry (or its absence)
+        // of every directory above it, root included. The trees on that path are
+        // all present once the subpath itself resolved, so absent means absent.
+        let checkout_inputs = |rev: &str, subpath: &str| {
+            let commit = repo.find_commit(git2::Oid::from_str(rev).ok()?).ok()?;
+            let root = commit.tree().ok()?;
+            let entry = root.get_path(Path::new(subpath)).ok()?;
+            if entry.kind() != Some(git2::ObjectType::Tree) {
+                return None;
+            }
+            let attributes: Vec<Option<git2::Oid>> = Path::new(subpath)
+                .ancestors()
+                .skip(1)
+                .map(|dir| {
+                    root.get_path(&dir.join(".gitattributes"))
+                        .ok()
+                        .map(|e| e.id())
+                })
+                .collect();
+            Some((entry.id(), attributes))
+        };
+        Ok(pairs
+            .into_iter()
+            .filter(|(rev, subpath)| {
+                let now = checkout_inputs(head, subpath);
+                now.is_some() && now == checkout_inputs(rev, subpath)
+            })
+            .cloned()
+            .collect())
+    })();
+    let _ = std::fs::remove_dir_all(&temp);
+    result.unwrap_or_else(|err| {
+        // A URL may carry `user:token@`, and git's stderr in `err` may repeat it.
+        log::info!(
+            "{}",
+            log_sanitize::sanitize(&format!(
+                "subtree comparison for {url} unavailable, reporting updates as before: {err}"
+            ))
+        );
+        HashSet::new()
+    })
 }
 
 pub fn checkout_revision(repo_dir: &Path, revision: &str) -> Result<()> {
