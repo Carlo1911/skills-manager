@@ -210,21 +210,6 @@ pub(crate) fn run_round_blocking(store: &SkillStore) -> Outcome {
     }
     crate::commands::git_backup::sync_engine_pref(store);
 
-    // See the true remote state (3d-γ) *before* the lock: a fetch is a
-    // network round-trip with no deadline of its own, and holding the
-    // central-repo lock across it wedges every concurrent foreground
-    // operation into a 20s "repository is busy" failure. Rounds are
-    // debounced, so one quiet fetch per round is cheap; offline it just
-    // leaves the refs stale.
-    //
-    // Staleness window: the remote may move between this fetch and the
-    // lock below. Harmless — `get_status` reads the fetched refs, and a
-    // concurrent push only means the next round sees `behind > 0` and
-    // merges then. The lock still guards every local mutation.
-    if let Err(e) = git_backup::fetch_remote(&skills_dir) {
-        log::debug!("auto backup: fetch failed (continuing offline): {e:#}");
-    }
-
     // Fail fast instead of queueing behind a user-initiated operation.
     let Ok(_lock) = RepoLock::acquire("auto backup") else {
         return Outcome::Skipped("repo busy");
@@ -237,7 +222,15 @@ pub(crate) fn run_round_blocking(store: &SkillStore) -> Outcome {
     if git_backup::ensure_no_interrupted_git_operation(&skills_dir).is_err() {
         return Outcome::Skipped("interrupted git operation");
     }
-
+    // Fetch under the lock: a lockless fetch into this directory races
+    // clone/reclone, which replace the directory outright. The killable
+    // runner (300s deadline) bounds the hang, and the off-lock
+    // `ls-remote` batch checks in `commands/skills.rs` Phase A already keep
+    // "check all" off the shared lock, so the status read below sees the
+    // true remote state.
+    if let Err(e) = git_backup::fetch_remote(&skills_dir) {
+        log::debug!("auto backup: fetch failed (continuing offline): {e:#}");
+    }
     let status = match git_backup::get_status(&skills_dir) {
         Ok(status) => status,
         Err(e) => return Outcome::Failed(format!("{e:#}")),

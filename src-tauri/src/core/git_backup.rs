@@ -11,11 +11,12 @@ use super::merge::protocol;
 use super::repo_lock::RepoLock;
 
 /// Upper bound for a single network round-trip against the backup remote
-/// (fetch, push, ls-remote). The runner below kills the child past this
-/// deadline: a hung SSH/HTTPS session must surface as an error the caller
-/// can handle (retry, skip, go offline), never as a lock the whole app waits
-/// on. Local-only commands bypass this and are unaffected.
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
+/// (fetch, push, ls-remote): 300s total deadline. Slow-but-moving HTTP
+/// transfers are caught earlier by the low-speed config below; this kills
+/// only a truly hung SSH/HTTPS session so it surfaces as an error the
+/// caller can handle (retry, skip, go offline), never as a lock the whole
+/// app waits on. Local-only commands bypass this and are unaffected.
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Subcommands that reach the network. Only these get the killable wait;
 /// everything else keeps the plain blocking `output()` (they are local and
@@ -585,11 +586,17 @@ pub(crate) fn push_unlocked(skills_dir: &Path) -> Result<()> {
 
     let env = remote_credential_env(skills_dir);
 
-    // Push branch first; if no upstream, set it.
+    // Push branch first; if no upstream, set it. (reviewer point 3: only
+    // retry with `-u` when no upstream is configured — an auth/network
+    // failure with an existing upstream must surface, not re-push.)
     let result = run_git_env(skills_dir, &["push"], &env);
     if result.is_err() {
-        log::info!("git push: no upstream tracking, retrying with -u origin {branch}");
-        run_git_env_checked(skills_dir, &["push", "-u", "origin", &branch], &env)?;
+        if run_git(skills_dir, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_err() {
+            log::info!("git push: no upstream tracking, retrying with -u origin {branch}");
+            run_git_env_checked(skills_dir, &["push", "-u", "origin", &branch], &env)?;
+        } else {
+            result?;
+        }
     }
 
     // Snapshot tags are lightweight (by design), so `--follow-tags` will not include them.
@@ -615,7 +622,6 @@ pub(crate) fn push_unlocked(skills_dir: &Path) -> Result<()> {
             .filter_map(|ref_name| ref_name.strip_prefix("refs/tags/"))
             .map(|tag| tag.to_string())
             .collect();
-
         let missing_tag_refs: Vec<String> = local_snapshot_tags
             .into_iter()
             .filter(|tag| !remote_snapshot_tags.contains(tag))
@@ -623,15 +629,13 @@ pub(crate) fn push_unlocked(skills_dir: &Path) -> Result<()> {
             .collect();
 
         if !missing_tag_refs.is_empty() {
-            let mut cmd = git_command();
-            cmd.arg("-C").arg(skills_dir).arg("push").arg("origin");
-            cmd.args(&missing_tag_refs);
-            cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             let pushed = missing_tag_refs.len();
-            let output = cmd.output().context("Failed to run git command")?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let redacted = redact_urls_in_text(&stderr);
+            let mut owned: Vec<String> =
+                vec!["push".to_string(), "origin".to_string()];
+            owned.extend(missing_tag_refs);
+            let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+            if let Err(e) = run_git_env(skills_dir, &refs, &env) {
+                let redacted = redact_urls_in_text(&e.to_string());
                 log::warn!("git push: snapshot tag push failed: {redacted}");
                 anyhow::bail!("git command failed: {}", redacted);
             }
@@ -1854,60 +1858,87 @@ fn run_git_env(dir: &Path, args: &[&str], envs: &[(String, String)]) -> Result<S
     check_git_output(&output)
 }
 
-/// Spawn the child with piped stderr, then poll it until it exits or
-/// `NETWORK_TIMEOUT` elapses — then kill it and report a timeout. The
-/// stderr drain keeps a chatty remote from wedging the child on a full
-/// pipe while the parent waits.
+/// Spawn the child with piped stdout+stderr, then poll it until it exits or
+/// `NETWORK_TIMEOUT` elapses — then kill it and report a timeout. Both
+/// pipes drain on threads so a chatty remote never wedges the child on a
+/// full pipe while the parent waits.
 fn run_git_env_killable(
     dir: &Path,
     args: &[&str],
     envs: &[(String, String)],
 ) -> Result<String> {
     use std::process::Stdio;
-    use std::sync::mpsc::channel;
 
-    let mut child = git_command()
-        .arg("-C")
-        .arg(dir)
+    // Reviewer points 4/5: bound SSH connects and surface stalled HTTP
+    // transfers early — but never override explicit user configuration.
+    let has_ssh_env = envs.iter().any(|(k, _)| {
+        k.eq_ignore_ascii_case("GIT_SSH_COMMAND") || k.eq_ignore_ascii_case("GIT_SSH")
+    });
+    let has_ssh_config = args.windows(2).any(|w| {
+        w[0] == "-c" && w[1].trim_start().starts_with("core.sshCommand")
+    });
+    let mut extra_envs: Vec<(String, String)> = Vec::new();
+    if !has_ssh_env && !has_ssh_config {
+        extra_envs.push((
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -o BatchMode=yes -o ConnectTimeout=10".to_string(),
+        ));
+    }
+    let remote_url = args.iter().find(|a| a.contains("://"));
+    let is_http = remote_url
+        .map(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .unwrap_or(false);
+
+    let mut cmd = git_command();
+    cmd.arg("-C").arg(dir);
+    if is_http {
+        cmd.arg("-c")
+            .arg("http.lowSpeedLimit=1000")
+            .arg("-c")
+            .arg("http.lowSpeedTime=60");
+    }
+    let mut child = cmd
         .args(args)
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(extra_envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         // Never let a remote ask for input: without this a credential or
         // host-key prompt blocks reads on stdin forever, past any timeout.
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .context("Failed to run git command")?;
 
-    // Drain stderr on a thread so the child never blocks on a full pipe.
-    let (stderr_tx, stderr_rx) = channel::<Vec<u8>>();
-    if let Some(mut stderr) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            let _ = stderr_tx.send(buf);
-        });
-    }
+    // Drain both pipes on threads so the child never blocks on a full pipe.
+    let (_stderr_rx, stderr_thread) =
+        super::git_fetcher::spawn_stderr_collector(child.stderr.take(), false);
+    let child_stdout = child.stdout.take();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut stdout) = child_stdout {
+            let _ = stdout.read_to_end(&mut buf);
+        }
+        buf
+    });
 
     let deadline = Instant::now() + NETWORK_TIMEOUT;
     loop {
-        match child.try_wait().context("Failed to wait for git")? {
-            Some(status) => {
+        match child.try_wait() {
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("Failed to wait for git: {e:#}");
+            }
+            Ok(Some(status)) => {
                 let output = std::process::Output {
                     status,
-                    stdout: {
-                        let mut out = Vec::new();
-                        if let Some(mut stdout) = child.stdout.take() {
-                            let _ = stdout.read_to_end(&mut out);
-                        }
-                        out
-                    },
-                    stderr: stderr_rx.try_recv().unwrap_or_default(),
+                    stdout: stdout_thread.join().unwrap_or_default(),
+                    stderr: stderr_thread.join().unwrap_or_default().into_bytes(),
                 };
                 return check_git_output(&output);
             }
-            None => {
+            Ok(None) => {
                 if Instant::now() > deadline {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -3576,25 +3607,35 @@ mod tests {
         }
     }
 
-    /// A network command against an unroutable remote must fail fast with a
-    /// timeout instead of blocking forever past `NETWORK_TIMEOUT`. Uses
-    /// `ls-remote` (read-only, no repo needed) with a reserved TEST-NET-1
-    /// address so no packet can ever come back.
+    /// A stalled remote must fail within a bounded wait. A loopback listener
+    /// that accepts and never answers stalls the connection deterministically
+    /// on every OS — unlike TEST-NET-1, where Windows fails fast with "Could
+    /// not connect" and never reaches the kill path (reviewer point 2). No
+    /// assertion on error text: the killable runner's own timeout and git's
+    /// HTTP low-speed abort are both deadlines, not hangs.
     #[test]
-    fn network_command_against_a_black_hole_times_out() {
+    fn network_command_against_a_stalled_remote_is_bounded() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Accept and hold: never read, never answer, never close.
+            for stream in listener.incoming() {
+                if stream.is_err() {
+                    break;
+                }
+                std::thread::park();
+            }
+        });
         let dir = tempfile::tempdir().unwrap();
+        let url = format!("http://127.0.0.1:{port}/black-hole.git");
         let start = std::time::Instant::now();
-        let err = run_git_env(
+        let _ = run_git_env(
             dir.path(),
-            &["ls-remote", "https://192.0.2.1/black-hole.git"],
+            &["ls-remote", &url],
             &[("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())],
         )
-        .expect_err("a black-hole remote must fail");
+        .expect_err("a stalled remote must fail");
         let elapsed = start.elapsed();
-        assert!(
-            err.to_string().contains("timed out"),
-            "expected a timeout error, got: {err:#}"
-        );
         assert!(
             elapsed < NETWORK_TIMEOUT + std::time::Duration::from_secs(30),
             "killable wait overran: {elapsed:?}"
