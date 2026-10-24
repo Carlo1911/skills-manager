@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **A skill's detail panel no longer claims an agent is synced when nothing was deployed there** — The per-agent toggles read the preset's stored intent, while the workspace skill count, the card agent dots and the batch sync dialog read what is actually on disk. Installing a new agent seeded its toggle rows as enabled for every preset skill: installing Claude Code left the app reporting "0 skills" for it in Global Workspace and a dim agent dot on every card, yet each skill's detail panel showed Claude Code checked and "2/2 synced" with no way to install from there, because the only click left was to turn it off. The active preset's toggles now report deployment state from `skill_targets`, the same source every other surface reads. An inactive preset still shows its stored intent, since applying it is what deploys.
 
+## [1.43.0] - 2026-10-21
+
+### Release Overview
+- My Skills can filter and group skills by where they came from, and MiniMax Code and the overseas edition of WorkBuddy are now supported. Skills uploaded from the Global Workspace no longer vanish at the next launch, copies with your edits survive an agent's skills folder moving, and Settings refuses a central repository folder the next launch could not move to.
+
+### User-facing
+- **Filter and group My Skills by source** — A source picker shows only the skills from one source, and a grouping toggle puts each source under one header with its skill count. One repository counts as one source whether it was added by SSH, HTTPS, `owner/repo` or skills.sh; site skills group by domain. Sources with more than one skill start collapsed, and a search opens every group. Dragging is off while grouping is on. Thanks to @ZhuYichuan (#589, #530).
+- **MiniMax Code** is a built-in agent: user skills go to `~/.minimax/skills`, project skills to `<repo>/.minimax/skills`. Thanks to @ZhuYichuan (#592).
+- **WorkBuddy AI (overseas edition)** — The overseas edition of WorkBuddy reads skills from `~/.workbuddy-ai/skills`, so skills deployed to WorkBuddy never loaded there. It is now its own agent, WorkBuddy AI; the domestic edition keeps `~/.workbuddy/skills`. Thanks to @huaqian0226 (#588, #587, #468).
+- **Skills uploaded from the Global Workspace stay in the library** — After an upload, the next launch of the app or the CLI could drop the skill and its deployments from the library, while its files stayed on disk. Uploads now save everything the library needs. Records already lost are not brought back. Thanks to @drkraft (#586).
+- **Edited copies survive an agent's skills folder moving** — When an agent's skills folder moved, either in Settings or because an update changed its default path, copies deployed at the old path were deleted together with any edits made in them. They are now moved into `kept-copies/<agent>/` inside the library. Links at the old path are still removed. Undeploying, disabling an agent, or switching to a preset without the skill still removes the copy (#595, #593).
+- **Settings refuses a central repository folder it cannot move to** — A new library location takes effect at the next launch, and that launch refused a folder that was not empty or that sat inside the current library. It did so silently, so the setting looked like it did nothing (#509, #541). Settings now refuses such a folder when you save, with a message instead of `[object Object]`. The migration warning appears under the path, and the hints say to quit the app completely, including from the tray (#596).
+- **Clearer error when a source no longer has a skill** — Installing a skill missing from the fetched repository showed a temporary folder path. The message now names the skill and asks you to check the source and its subfolder (#594).
+- **Windows: install with Scoop** — `scoop bucket add extras`, then `scoop install extras/skills-manager`. Thanks to @12dxc for adding it to Scoop Extras (#591).
+
+### Developer & Governance
+- Frontend component tests: Vitest with jsdom, an `npm test` script, and tests for PresetBar. The Frontend CI job runs them. Thanks to @huoguojun123 (#570).
+- `REVIEW.md` sets how deep a review goes from what a change touches, and lists the failure classes that keep recurring in this repository.
+- "Inside the current library" now resolves links, both when saving the path and in the startup migration. Before, a target reached through a link into the library passed, and the startup migration then tried to copy the library into itself (#596).
+- `sync_skill_to_active_scenario` now leaves alone a path that another tool has a live deployment at, as `sync_desired_targets` already did (#595).
 ## [1.42.2] - 2026-10-18
 
 ### Release Overview
