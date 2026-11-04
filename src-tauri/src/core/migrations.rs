@@ -323,10 +323,42 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// v8 → v9: per-device skill enabled table (opción C). Each device records
+/// v8 → v9: per-skill content stamps, so the startup reindex can skip
+/// re-reading a skill whose files have not changed (#623). A local cache only:
+/// a missing row means "hash it", and the row goes with its skill.
+///
+/// Numbered as upstream numbers it, so a database upstream already moved to v9
+/// is recognised as such.
+fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
+    create_skill_content_stamps(conn)
+}
+
+/// v9 → v10: per-device skill enabled table (opción C). Each device records
 /// its own enabled override; the union of rows is the full picture and the
 /// metadata `devices{}` map mirrors it into the backup.
-fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
+///
+/// This fork shipped the device table as its own v9 before upstream took v9 for
+/// content stamps, so a database can arrive here holding either table, both or
+/// neither. Both creations are idempotent, so all of them converge.
+fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
+    create_skill_content_stamps(conn)?;
+    create_skill_device_state(conn)
+}
+
+fn create_skill_content_stamps(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS skill_content_stamps (
+            skill_id TEXT PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+            stamp TEXT NOT NULL,
+            content_hash TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn create_skill_device_state(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS skill_device_state (
@@ -338,22 +370,6 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
             PRIMARY KEY(skill_id, device_slug)
         );
         CREATE INDEX IF NOT EXISTS idx_skill_device_state_device ON skill_device_state(device_slug);
-        ",
-    )?;
-    Ok(())
-}
-
-/// v9 → v10: per-skill content stamps, so the startup reindex can skip
-/// re-reading a skill whose files have not changed (#623). A local cache only:
-/// a missing row means "hash it", and the row goes with its skill.
-fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS skill_content_stamps (
-            skill_id TEXT PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
-            stamp TEXT NOT NULL,
-            content_hash TEXT NOT NULL
-        );
         ",
     )?;
     Ok(())
@@ -666,6 +682,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(enabled, 0);
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// A database this fork already moved to its own v9 (device table only).
+    #[test]
+    fn fork_v9_database_gains_content_stamps() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch("DROP TABLE skill_content_stamps;").unwrap();
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        assert!(table_exists(&conn, "skill_device_state"));
+
+        run_migrations(&conn).unwrap();
+
+        assert!(table_exists(&conn, "skill_content_stamps"));
+        assert!(table_exists(&conn, "skill_device_state"));
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_VERSION);
+    }
+
+    /// A database upstream already moved to its v9 (stamps table only).
+    #[test]
+    fn upstream_v9_database_gains_device_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE skill_device_state; DROP INDEX IF EXISTS idx_skill_device_state_device;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        assert!(table_exists(&conn, "skill_content_stamps"));
+
+        run_migrations(&conn).unwrap();
+
+        assert!(table_exists(&conn, "skill_device_state"));
+        assert!(table_exists(&conn, "skill_content_stamps"));
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_VERSION);
     }
 
     #[test]
