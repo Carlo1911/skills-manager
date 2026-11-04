@@ -5,6 +5,44 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.43.3] - 2026-11-03
+
+### 发布概览
+- 部署给 Antigravity 的 Skill 现在会放进它实际读取的目录。检查更新时遇到网络抖动，同一仓库的 Skill 不再全部显示有更新。项目里几个 Agent 共用的目录，只装了其中一部分 Agent 时也能正常使用。
+
+### 用户可见更新
+- **Antigravity 能找到部署的 Skill 了** — 之前 Antigravity 的 Skill 部署到 `~/.gemini/antigravity/skills`，新版 Antigravity 不读这个目录。现在全局 Skill 部署到 `~/.gemini/config/skills`（Antigravity 的 App、IDE 和 CLI 都读这里），项目 Skill 部署到 `<项目>/.agents/skills`。已部署给 Antigravity 的 Skill 会在下次同步时重新部署到新目录。旧目录里的链接会被删除，副本移到技能库的 `kept-copies/antigravity/` 下，和其他 Agent 目录变更时的处理一样。感谢 @ZhuYichuan（#605），也感谢更早在 #458 提出相同路径的 @zhirogo（#602、#461、#409、#217）。
+- **比较失败不再显示为有更新** — 对于从仓库里某个子目录安装的 Skill，检查更新时会再发一次请求，比较这个子目录和已安装的版本。这次请求失败时（比如网络连接断开），同一仓库的这类 Skill 会全部显示「Update」，角标、通知和自动更新也都据此行动。现在这些 Skill 会显示检查失败，保留已安装的版本，下次检查时再试。仍然可以在卡片上手动更新。感谢 @HengYangDS（#583、#582）。
+- **共用的项目目录保持可用** — 在项目工作区里，读同一个目录的 Agent 会合成一行，例如 Antigravity、Cline、Warp 和 GitLab Duo 都用 `.agents/skills`。之前这一行只看排在第一位的 Agent 是否已安装、已启用，所以以下几种情况都无法在这一行添加 Skill：没装 Cline 的 Warp 用户；和内置 Agent 共用目录的自定义 Agent；没装 TRAE IDE、又把 TRAE CN 的项目目录改成 `.trae/skills` 的用户。现在只要读这个目录的 Agent 里有一个已安装并启用，这一行就能使用。感谢 @GoodScholar 在 #489 中定位到这个问题（#633、#431、#632）。
+
+### 开发者与治理更新
+- 对于上面第二条里的那类 Skill，`skills-manager-cli skills check --json` 现在报 `error`，比较的报错放在 `last_check_error` 里，之前报的是 `update_available`。从仓库根目录安装的 Skill，以及已经在远端最新提交上的子目录 Skill，行为不变。没有新增状态（#583）。
+- `project_agent_targets_for_record` 现在根据项目目录与这一行相同的所有 adapter 来判断「已安装」「已启用」，而不只看这一行的 key 所属的 adapter。`export_skill_to_project` 按同一状态过滤。这一行仍用第一个 adapter 的 key。回归测试改为读取这个 key、不再写死，因为 #605 改变了排在第一位的 adapter（#633、#634）。
+## [1.43.2] - 2026-11-01
+
+### 发布概览
+- 在较旧的 macOS 上打开 Skill 不再黑屏；启动和 CLI 命令不再每次重读所有 Skill 的文件；Skill 预览会隐藏以 Windows 换行保存的元数据头。
+
+### 用户可见更新
+- **较旧的 macOS 上打开 Skill 不再黑屏** — 在 Safari 16.4 之前的 WebKit 上（例如没升级 Safari 的 macOS Monterey），显示 SKILL.md 时用到了这个引擎不支持的正则特性，整个窗口变黑，只能退出应用。现在这类系统改用普通 Markdown 显示：表格、清单和删除线显示为纯文本（#627、#613）。
+- **大 Skill 不再拖慢启动和 CLI 命令** — 每次启动、每条 `skills-manager-cli` 命令，都会把每个 Skill 的所有文件重读一遍来判断是否改动；一个 13,000 个文件的 Skill 在 Windows 上要约 90 秒。现在只有文件的名称、大小或修改时间变了才重读。更新后第一次启动仍会完整读一遍（#628、#623）。
+- **Skill 预览隐藏 Windows 换行的元数据头** — 用 Windows 换行保存的 SKILL.md，或元数据头一直写到文件末尾时，元数据会显示在预览里；空的元数据头还会把下一行 `---` 之前的说明一起藏掉。感谢 @Jiandong7（#620）。
+
+### 开发者与治理更新
+- 数据库 schema 升到 v9，新增本地缓存表 `skill_content_stamps`，记录每个 Skill 的文件指纹和记录时对应的哈希。只有全部文件读取成功、读取期间没有变化时才写入；Skill 记录里的哈希一变，这份指纹就作废。已接受的边界：大小和修改时间都被保留的改写会被当成没变；macOS 和 Linux 上 inode 的变更时间能兜住，Windows 不能。和以往的 schema 变更一样，升级后的数据库旧版本无法打开（#628）。
+- `SkillMarkdown` 在加载时探测一次是否支持正则后行断言。Vite 7 的构建目标是 safari16，esbuild 会把 remark-gfm 里的后行断言字面量改写成运行时的 `new RegExp`，要到渲染文档时才报错（#627）。
+## [1.43.1] - 2026-10-27
+
+### 发布概览
+- 技能库没变时，你在 Agent 目录里改过的副本不再被日常同步覆盖；CLI 的 `skills check` 现在会检查从本地文件夹安装的 Skill。
+
+### 用户可见更新
+- **技能库没变时，改过的副本不再被覆盖** — 以复制方式部署的 Skill，在 PresetBar 应用 Preset、从「添加 Skills」弹层添加、批量部署、安装后的同步，以及内容没变的更新或重新导入时，都会被重新复制一遍，你在 Agent 目录里做的修改随之丢失。现在只要技能库的内容和部署时一样，这些操作就不动副本，和启动时的同步一致。技能库真的更新时，副本仍会被替换，和以前一样。这样的副本要等下次内容变化，或取消部署后重新部署，才会改成链接（#598）。
+- **`skills-manager-cli skills check` 会检查本地 Skill** — 以前对从本地文件夹安装或导入的 Skill 直接跳过，输出 `skipped: true`。现在和应用一样，拿它和源文件夹比对，报告 `up_to_date`、`update_available` 或 `source_missing`。本地检查每次都实际执行，更新检查的缓存只用于 Git 来源。来自网站的 Skill 仍然跳过（#597、#590）。
+
+### 开发者与治理更新
+- 启动同步用来判断「已部署的副本是否仍是最新」的检查，抽成了一个函数 `recorded_target_is_current`，五个同步入口都调用它。只看调用方 Agent 自己的记录，所以多个 Agent 共用一个技能目录时（amp 与 replit、cline 与 warp），行为和以前一样。副本的位置上放着文件或指向别处的链接时，启动同步现在会报告拒绝写入，而不是静默跳过（#598）。
+- `skills/manage-skills` 补充说明：本地 Skill 的 `check` 比对的是什么，`update_available` 和 `source_missing` 是什么意思（#597）。
 ## [1.43.0] - 2026-10-21
 
 ### 发布概览
